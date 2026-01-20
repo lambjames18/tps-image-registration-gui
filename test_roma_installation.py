@@ -10,10 +10,7 @@ from pathlib import Path
 import logging
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(levelname)s: %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
@@ -74,7 +71,7 @@ def test_checkpoint():
     print("Testing Checkpoint")
     print("=" * 60)
 
-    checkpoint_path = Path("MatchAnything/weights/matchanything_roma.ckpt")
+    checkpoint_path = Path("./matchanything_roma.ckpt")
 
     if checkpoint_path.exists():
         size_mb = checkpoint_path.stat().st_size / (1024 * 1024)
@@ -97,10 +94,11 @@ def test_roma_matcher():
 
     try:
         from roma_matcher import RomaMatcher
+
         print("OK RomaMatcher imported successfully")
         return True
     except ImportError as e:
-        if 'torch' in str(e).lower():
+        if "torch" in str(e).lower():
             print("WARN RomaMatcher requires torch (install with: pip install torch)")
             return None  # Not a failure, just missing dependency
         else:
@@ -128,7 +126,7 @@ def test_roma_config():
         print(f"  Available presets: {', '.join(AVAILABLE_PRESETS.keys())}")
 
         # Test getting a preset
-        ebsd_config = get_preset_config('ebsd')
+        ebsd_config = get_preset_config("ebsd")
         print(f"✓ EBSD preset loaded successfully")
         print(f"  Confidence threshold: {ebsd_config['match_thresh']}")
         print(f"  Num samples: {ebsd_config['sample']['n_sample']}")
@@ -150,7 +148,7 @@ def test_models_integration():
 
         engines = PointAutoIdentifier.ENGINES
 
-        if 'matchanything' in engines or 'roma' in engines:
+        if "matchanything" in engines or "roma" in engines:
             print("✓ ROMA engine registered in PointAutoIdentifier")
             print(f"  Available engines: {', '.join(engines.keys())}")
             return True
@@ -162,31 +160,6 @@ def test_models_integration():
     except Exception as e:
         print(f"✗ Failed to test models.py integration: {e}")
         return False
-
-
-def test_matchanything_path():
-    """Test if MatchAnything directory exists and has required structure."""
-    print("\n" + "=" * 60)
-    print("Testing MatchAnything Directory")
-    print("=" * 60)
-
-    required_paths = [
-        "MatchAnything",
-        "MatchAnything/third_party",
-        "MatchAnything/third_party/ROMA",
-        "MatchAnything/src",
-    ]
-
-    all_exist = True
-    for path_str in required_paths:
-        path = Path(path_str)
-        if path.exists():
-            print(f"✓ {path_str:40s} - exists")
-        else:
-            print(f"✗ {path_str:40s} - NOT FOUND")
-            all_exist = False
-
-    return all_exist
 
 
 def test_model_loading():
@@ -201,13 +174,13 @@ def test_model_loading():
         import numpy as np
 
         # Check if checkpoint exists (try both old and new locations)
-        checkpoint_path = Path("matchanything_roma.ckpt")
-        if not checkpoint_path.exists():
-            checkpoint_path = Path("MatchAnything/weights/matchanything_roma.ckpt")
+        checkpoint_path = Path("./matchanything_roma.ckpt")
 
         if not checkpoint_path.exists():
             print("WARN Skipping model loading test - checkpoint not found")
-            print("  Download from: https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view")
+            print(
+                "  Download from: https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view"
+            )
             return None
 
         print("Loading ROMA model (this may take a moment)...")
@@ -235,7 +208,7 @@ def test_model_loading():
         return True
 
     except ImportError as e:
-        if 'torch' in str(e).lower():
+        if "torch" in str(e).lower():
             print("WARN Model loading requires torch (install with: pip install torch)")
             return None
         else:
@@ -247,6 +220,7 @@ def test_model_loading():
     except Exception as e:
         print(f"ERROR Model loading failed: {e}")
         import traceback
+
         print("\nFull error traceback:")
         print(traceback.format_exc())
         return False
@@ -261,7 +235,6 @@ def run_all_tests():
     results = {
         "Imports": test_imports(),
         "CUDA": test_cuda(),
-        "MatchAnything Directory": test_matchanything_path(),
         "Checkpoint File": test_checkpoint(),
         "RomaMatcher Import": test_roma_matcher(),
         "Configuration": test_roma_config(),
@@ -301,7 +274,9 @@ def run_all_tests():
     if failed == 0 and passed > 0:
         print("OK All critical tests passed! ROMA is ready to use.")
         if skipped > 0:
-            print(f"  ({skipped} optional tests skipped - usually due to missing torch)")
+            print(
+                f"  ({skipped} optional tests skipped - usually due to missing torch)"
+            )
     elif failed > 0:
         print("ERROR Some tests failed. Please address the following:")
     else:
@@ -309,7 +284,9 @@ def run_all_tests():
 
         if not results["Imports"]:
             print("\n1. Install missing Python packages:")
-            print("   pip install torch torchvision kornia einops loguru pillow scikit-image scipy")
+            print(
+                "   pip install torch torchvision kornia einops loguru pillow scikit-image scipy"
+            )
 
         if not results["CUDA"]:
             print("\n2. CUDA not available:")
@@ -318,7 +295,9 @@ def run_all_tests():
 
         if not results["Checkpoint File"]:
             print("\n3. Download the model checkpoint:")
-            print("   https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view")
+            print(
+                "   https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view"
+            )
 
         if not results["MatchAnything Directory"]:
             print("\n4. MatchAnything directory structure missing:")
@@ -342,4 +321,5 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n\nUnexpected error during testing: {e}")
         import traceback
+
         print(traceback.format_exc())

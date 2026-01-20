@@ -22,7 +22,7 @@ Usage:
 
 import logging
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple
 
 import numpy as np
 import torch
