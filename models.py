@@ -625,9 +625,8 @@ class PointAutoIdentifier:
             ransac_filter = kwargs.get("ransac_filter", True)
             ransac_threshold = kwargs.get("ransac_threshold", 5.5)
             num_samples = kwargs.get("num_samples", 5000)
-            checkpoint_path = kwargs.get(
-                "checkpoint_path", "matchanything_roma.ckpt"
-            )
+            checkpoint_path = kwargs.get("checkpoint_path", "matchanything_roma.ckpt")
+            # device = kwargs.get("device", "cpu")
             device = kwargs.get("device", "cuda")
             resize_by_stretch = kwargs.get("resize_by_stretch", True)
             coarse_resolution = kwargs.get("coarse_resolution", (560, 560))
@@ -646,7 +645,10 @@ class PointAutoIdentifier:
 
             # Detect points
             src_points, dst_points, _ = matcher.detect_points(
-                source_image, destination_image, ransac_filter=ransac_filter, ransac_threshold=ransac_threshold
+                source_image,
+                destination_image,
+                ransac_filter=ransac_filter,
+                ransac_threshold=ransac_threshold,
             )
 
             logger.info(f"ROMA detected {len(src_points)} matches")

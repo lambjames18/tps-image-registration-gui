@@ -90,14 +90,14 @@ class RomaMatcher:
 
         # Store configuration
         self.config = {
-            'confidence_threshold': confidence_threshold,
-            'num_samples': num_samples,
-            'resize_by_stretch': resize_by_stretch,
-            'normalize_images': normalize_images,
-            'coarse_resolution': coarse_resolution,
-            'upsample_resolution': upsample_resolution,
-            'use_symmetric_matching': use_symmetric_matching,
-            'use_certainty_attenuation': use_certainty_attenuation,
+            "confidence_threshold": confidence_threshold,
+            "num_samples": num_samples,
+            "resize_by_stretch": resize_by_stretch,
+            "normalize_images": normalize_images,
+            "coarse_resolution": coarse_resolution,
+            "upsample_resolution": upsample_resolution,
+            "use_symmetric_matching": use_symmetric_matching,
+            "use_certainty_attenuation": use_certainty_attenuation,
         }
 
         # Initialize model
@@ -111,11 +111,7 @@ class RomaMatcher:
         logger.info("ROMA model loaded successfully")
 
     def _load_model(
-        self,
-        coarse_resolution,
-        upsample_resolution,
-        symmetric,
-        attenuate_cert
+        self, coarse_resolution, upsample_resolution, symmetric, attenuate_cert
     ):
         """Load the ROMA model with pretrained weights."""
         logger.info(f"Loading checkpoint from {self.checkpoint_path}")
@@ -146,15 +142,9 @@ class RomaMatcher:
         Returns:
             Image tensor in CHW format with values in [0, 1]
         """
-        # Convert to float32
-        if image.dtype == np.uint8:
-            image = image.astype(np.float32) / 255.0
-        else:
-            image = image.astype(np.float32)
-
-        # Ensure image is in [0, 1] range
-        if image.max() > 1.0:
-            image = image / 255.0
+        # Convert to float32, normalize to [0, 1]
+        image = image.astype(np.float32)
+        image /= image.max()  # Normalize to [0, 1]
 
         # Handle grayscale images
         if image.ndim == 2:
@@ -219,9 +209,7 @@ class RomaMatcher:
         )
 
         # Convert to pixel coordinates
-        kpts0, kpts1 = self.model.to_pixel_coordinates(
-            matches, H_A, W_A, H_B, W_B
-        )
+        kpts0, kpts1 = self.model.to_pixel_coordinates(matches, H_A, W_A, H_B, W_B)
 
         # Apply confidence threshold
         mask = certainty_sampled > self.confidence_threshold
@@ -237,7 +225,9 @@ class RomaMatcher:
         mkpts1 = kpts1[mask].cpu().numpy()
         mconf = certainty_sampled[mask].cpu().numpy()
 
-        logger.info(f"Detected {len(mkpts0)} matches with confidence > {self.confidence_threshold}")
+        logger.info(
+            f"Detected {len(mkpts0)} matches with confidence > {self.confidence_threshold}"
+        )
 
         # Optional RANSAC filtering
         if ransac_filter and len(mkpts0) >= 4:
@@ -318,19 +308,16 @@ class RomaMatcher:
         )
 
         return {
-            'source_points': src_pts,
-            'destination_points': dst_pts,
-            'confidences': conf,
-            'num_matches': len(src_pts),
-            'mean_confidence': float(np.mean(conf)) if len(conf) > 0 else 0.0,
-            'ransac_applied': ransac_filter,
+            "source_points": src_pts,
+            "destination_points": dst_pts,
+            "confidences": conf,
+            "num_matches": len(src_pts),
+            "mean_confidence": float(np.mean(conf)) if len(conf) > 0 else 0.0,
+            "ransac_applied": ransac_filter,
         }
 
     def __call__(
-        self,
-        source_image: np.ndarray,
-        destination_image: np.ndarray,
-        **kwargs
+        self, source_image: np.ndarray, destination_image: np.ndarray, **kwargs
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Convenience method to detect points (returns only point arrays).
@@ -343,7 +330,9 @@ class RomaMatcher:
         Returns:
             Tuple of (source_points, destination_points)
         """
-        src_pts, dst_pts, _ = self.detect_points(source_image, destination_image, **kwargs)
+        src_pts, dst_pts, _ = self.detect_points(
+            source_image, destination_image, **kwargs
+        )
         return src_pts, dst_pts
 
 
@@ -354,7 +343,7 @@ def detect_points_roma(
     checkpoint_path: str,
     confidence_threshold: float = 0.1,
     ransac_filter: bool = False,
-    **kwargs
+    **kwargs,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Convenience function to detect points without manually creating a matcher.
@@ -376,11 +365,9 @@ def detect_points_roma(
     matcher = RomaMatcher(
         checkpoint_path=checkpoint_path,
         confidence_threshold=confidence_threshold,
-        **kwargs
+        **kwargs,
     )
 
     return matcher.detect_points(
-        source_image,
-        destination_image,
-        ransac_filter=ransac_filter
+        source_image, destination_image, ransac_filter=ransac_filter
     )
