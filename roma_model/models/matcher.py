@@ -11,10 +11,15 @@ from warnings import warn
 from PIL import Image
 
 import roma_model as roma
-from roma_model.utils import get_tuple_transform_ops, resize_by_longest_edge_and_padding, resize_by_longest_edge_and_stretch
+from roma_model.utils import (
+    get_tuple_transform_ops,
+    resize_by_longest_edge_and_padding,
+    resize_by_longest_edge_and_stretch,
+)
 from roma_model.utils.local_correlation import local_correlation
 from roma_model.utils.utils import cls_to_flow_refine
 from roma_model.utils.kde import kde
+
 
 class ConvRefiner(nn.Module):
     def __init__(
@@ -25,26 +30,30 @@ class ConvRefiner(nn.Module):
         dw=False,
         kernel_size=5,
         hidden_blocks=3,
-        displacement_emb = None,
-        displacement_emb_dim = None,
-        local_corr_radius = None,
-        corr_in_other = None,
-        no_im_B_fm = False,
-        amp = False,
-        concat_logits = False,
-        use_bias_block_1 = True,
-        use_cosine_corr = False,
-        disable_local_corr_grad = False,
-        is_classifier = False,
-        sample_mode = "bilinear",
-        norm_type = nn.BatchNorm2d,
-        bn_momentum = 0.1,
-        amp_dtype = torch.float16,
+        displacement_emb=None,
+        displacement_emb_dim=None,
+        local_corr_radius=None,
+        corr_in_other=None,
+        no_im_B_fm=False,
+        amp=False,
+        concat_logits=False,
+        use_bias_block_1=True,
+        use_cosine_corr=False,
+        disable_local_corr_grad=False,
+        is_classifier=False,
+        sample_mode="bilinear",
+        norm_type=nn.BatchNorm2d,
+        bn_momentum=0.1,
+        amp_dtype=torch.float16,
     ):
         super().__init__()
         self.bn_momentum = bn_momentum
         self.block1 = self.create_block(
-            in_dim, hidden_dim, dw=dw, kernel_size=kernel_size, bias = use_bias_block_1,
+            in_dim,
+            hidden_dim,
+            dw=dw,
+            kernel_size=kernel_size,
+            bias=use_bias_block_1,
         )
         self.hidden_blocks = nn.Sequential(
             *[
@@ -62,7 +71,7 @@ class ConvRefiner(nn.Module):
         self.out_conv = nn.Conv2d(hidden_dim, out_dim, 1, 1, 0)
         if displacement_emb:
             self.has_displacement_emb = True
-            self.disp_emb = nn.Conv2d(2,displacement_emb_dim,1,1,0)
+            self.disp_emb = nn.Conv2d(2, displacement_emb_dim, 1, 1, 0)
         else:
             self.has_displacement_emb = False
         self.local_corr_radius = local_corr_radius
@@ -75,15 +84,15 @@ class ConvRefiner(nn.Module):
         self.is_classifier = is_classifier
         self.sample_mode = sample_mode
         self.amp_dtype = amp_dtype
-        
+
     def create_block(
         self,
         in_dim,
         out_dim,
         dw=False,
         kernel_size=5,
-        bias = True,
-        norm_type = nn.BatchNorm2d,
+        bias=True,
+        norm_type=nn.BatchNorm2d,
     ):
         num_groups = 1 if not dw else in_dim
         if dw:
@@ -99,38 +108,57 @@ class ConvRefiner(nn.Module):
             groups=num_groups,
             bias=bias,
         )
-        norm = norm_type(out_dim, momentum = self.bn_momentum) if norm_type is nn.BatchNorm2d else norm_type(num_channels = out_dim)
+        norm = (
+            norm_type(out_dim, momentum=self.bn_momentum)
+            if norm_type is nn.BatchNorm2d
+            else norm_type(num_channels=out_dim)
+        )
         relu = nn.ReLU(inplace=True)
         conv2 = nn.Conv2d(out_dim, out_dim, 1, 1, 0)
         return nn.Sequential(conv1, norm, relu, conv2)
-        
-    def forward(self, x, y, flow, scale_factor = 1, logits = None):
-        b,c,hs,ws = x.shape
-        with torch.autocast("cuda", enabled=self.amp, dtype = self.amp_dtype):
+
+    def forward(self, x, y, flow, scale_factor=1, logits=None):
+        b, c, hs, ws = x.shape
+        with torch.autocast("cuda", enabled=self.amp, dtype=self.amp_dtype):
             with torch.no_grad():
-                x_hat = F.grid_sample(y, flow.permute(0, 2, 3, 1), align_corners=False, mode = self.sample_mode)
+                x_hat = F.grid_sample(
+                    y,
+                    flow.permute(0, 2, 3, 1),
+                    align_corners=False,
+                    mode=self.sample_mode,
+                )
             if self.has_displacement_emb:
                 im_A_coords = torch.meshgrid(
-                (
-                    torch.linspace(-1 + 1 / hs, 1 - 1 / hs, hs, device=x.device),
-                    torch.linspace(-1 + 1 / ws, 1 - 1 / ws, ws, device=x.device),
-                )
+                    (
+                        torch.linspace(-1 + 1 / hs, 1 - 1 / hs, hs, device=x.device),
+                        torch.linspace(-1 + 1 / ws, 1 - 1 / ws, ws, device=x.device),
+                    ),
+                    indexing="ij",
                 )
                 im_A_coords = torch.stack((im_A_coords[1], im_A_coords[0]))
                 im_A_coords = im_A_coords[None].expand(b, 2, hs, ws)
-                in_displacement = flow-im_A_coords
-                emb_in_displacement = self.disp_emb(40/32 * scale_factor * in_displacement)
+                in_displacement = flow - im_A_coords
+                emb_in_displacement = self.disp_emb(
+                    40 / 32 * scale_factor * in_displacement
+                )
                 if self.local_corr_radius:
                     if self.corr_in_other:
                         # Corr in other means take a kxk grid around the predicted coordinate in other image
-                        local_corr = local_correlation(x,y,local_radius=self.local_corr_radius,flow = flow, 
-                                                       sample_mode = self.sample_mode)
+                        local_corr = local_correlation(
+                            x,
+                            y,
+                            local_radius=self.local_corr_radius,
+                            flow=flow,
+                            sample_mode=self.sample_mode,
+                        )
                     else:
-                        raise NotImplementedError("Local corr in own frame should not be used.")
+                        raise NotImplementedError(
+                            "Local corr in own frame should not be used."
+                        )
                     if self.no_im_B_fm:
                         x_hat = torch.zeros_like(x)
                     d = torch.cat((x, x_hat, emb_in_displacement, local_corr), dim=1)
-                else:    
+                else:
                     d = torch.cat((x, x_hat, emb_in_displacement), dim=1)
             else:
                 if self.no_im_B_fm:
@@ -143,6 +171,7 @@ class ConvRefiner(nn.Module):
         d = self.out_conv(d.float())
         displacement, certainty = d[:, :-1], d[:, -1:]
         return displacement, certainty
+
 
 class CosKernel(nn.Module):  # similar to softmax kernel
     def __init__(self, T, learn_temperature=False):
@@ -164,6 +193,7 @@ class CosKernel(nn.Module):  # similar to softmax kernel
         K = ((c - 1.0) / T).exp()
         return K
 
+
 class GP(nn.Module):
     def __init__(
         self,
@@ -177,7 +207,7 @@ class GP(nn.Module):
         only_nearest_neighbour=False,
         sigma_noise=0.1,
         no_cov=False,
-        predict_features = False,
+        predict_features=False,
     ):
         super().__init__()
         self.K = kernel(T=T, learn_temperature=learn_temperature)
@@ -200,12 +230,14 @@ class GP(nn.Module):
             torch.meshgrid(
                 torch.arange(-(K // 2), K // 2 + 1), torch.arange(-(K // 2), K // 2 + 1)
             ),
+            indexing="ij",
             dim=-1,
         )
         positions = torch.stack(
             torch.meshgrid(
                 torch.arange(K // 2, h + K // 2), torch.arange(K // 2, w + K // 2)
             ),
+            indexing="ij",
             dim=-1,
         )
         neighbours = positions[:, :, None, None, :] + delta[None, :, :]
@@ -237,7 +269,8 @@ class GP(nn.Module):
             (
                 torch.linspace(-1 + 1 / h, 1 - 1 / h, h, device=y.device),
                 torch.linspace(-1 + 1 / w, 1 - 1 / w, w, device=y.device),
-            )
+            ),
+            indexing="ij",
         )
 
         coarse_coords = torch.stack((coarse_coords[1], coarse_coords[0]), dim=-1)[
@@ -259,17 +292,31 @@ class GP(nn.Module):
         K_yx = K_xy.permute(0, 2, 1)
         sigma_noise = self.sigma_noise * torch.eye(h2 * w2, device=x.device)[None, :, :]
         with warnings.catch_warnings():
-            K_yy = K_yy + sigma_noise # To increase stability in inverse
+            K_yy = K_yy + sigma_noise  # To increase stability in inverse
             with torch.no_grad():
-                K_yy_dig_zeromask = ((K_yy[torch.eye(h2 * w2, device=x.device, dtype=torch.bool).repeat(b, 1, 1)] == 0).reshape(b, -1))
-            K_yy = K_yy + self.sigma_noise * K_yy_dig_zeromask[..., None] * torch.eye(h2 * w2, device=x.device)[None, :, :]
+                K_yy_dig_zeromask = (
+                    K_yy[
+                        torch.eye(h2 * w2, device=x.device, dtype=torch.bool).repeat(
+                            b, 1, 1
+                        )
+                    ]
+                    == 0
+                ).reshape(b, -1)
+            K_yy = (
+                K_yy
+                + self.sigma_noise
+                * K_yy_dig_zeromask[..., None]
+                * torch.eye(h2 * w2, device=x.device)[None, :, :]
+            )
             K_yy_inv = torch.linalg.inv(K_yy)
 
         mu_x = K_xy.matmul(K_yy_inv.matmul(f))
         mu_x = rearrange(mu_x, "b (h w) d -> b d h w", h=h1, w=w1)
         if not self.no_cov:
             cov_x = K_xx - K_xy.matmul(K_yy_inv.matmul(K_yx))
-            cov_x = rearrange(cov_x, "b (h w) (r c) -> b h w r c", h=h1, w=w1, r=h1, c=w1)
+            cov_x = rearrange(
+                cov_x, "b (h w) (r c) -> b h w r c", h=h1, w=w1, r=h1, c=w1
+            )
             local_cov_x = self.get_local_cov(cov_x)
             local_cov_x = rearrange(local_cov_x, "b h w K -> b K h w")
             gp_feats = torch.cat((mu_x, local_cov_x), dim=1)
@@ -277,11 +324,24 @@ class GP(nn.Module):
             gp_feats = mu_x
         return gp_feats
 
+
 class Decoder(nn.Module):
     def __init__(
-        self, embedding_decoder, gps, proj, conv_refiner, amp, detach=False, scales="all", pos_embeddings = None,
-        num_refinement_steps_per_scale = 1, warp_noise_std = 0.0, displacement_dropout_p = 0.0, gm_warp_dropout_p = 0.0,
-        flow_upsample_mode = "bilinear", amp_dtype = torch.float16,
+        self,
+        embedding_decoder,
+        gps,
+        proj,
+        conv_refiner,
+        amp,
+        detach=False,
+        scales="all",
+        pos_embeddings=None,
+        num_refinement_steps_per_scale=1,
+        warp_noise_std=0.0,
+        displacement_dropout_p=0.0,
+        gm_warp_dropout_p=0.0,
+        flow_upsample_mode="bilinear",
+        amp_dtype=torch.float16,
     ):
         super().__init__()
         self.embedding_decoder = embedding_decoder
@@ -305,26 +365,28 @@ class Decoder(nn.Module):
         self.gm_warp_dropout_p = gm_warp_dropout_p
         self.flow_upsample_mode = flow_upsample_mode
         self.amp_dtype = amp_dtype
-        
+
     def get_placeholder_flow(self, b, h, w, device):
         coarse_coords = torch.meshgrid(
             (
                 torch.linspace(-1 + 1 / h, 1 - 1 / h, h, device=device),
                 torch.linspace(-1 + 1 / w, 1 - 1 / w, w, device=device),
-            )
+            ),
+            indexing="ij",
         )
         coarse_coords = torch.stack((coarse_coords[1], coarse_coords[0]), dim=-1)[
             None
         ].expand(b, h, w, 2)
         coarse_coords = rearrange(coarse_coords, "b h w d -> b d h w")
         return coarse_coords
-    
-    def get_positional_embedding(self, b, h ,w, device):
+
+    def get_positional_embedding(self, b, h, w, device):
         coarse_coords = torch.meshgrid(
             (
                 torch.linspace(-1 + 1 / h, 1 - 1 / h, h, device=device),
                 torch.linspace(-1 + 1 / w, 1 - 1 / w, w, device=device),
-            )
+            ),
+            indexing="ij",
         )
 
         coarse_coords = torch.stack((coarse_coords[1], coarse_coords[0]), dim=-1)[
@@ -334,16 +396,29 @@ class Decoder(nn.Module):
         coarse_embedded_coords = self.pos_embedding(coarse_coords)
         return coarse_embedded_coords
 
-    def forward(self, f1, f2, gt_warp = None, gt_prob = None, upsample = False, flow = None, certainty = None, scale_factor = 1):
+    def forward(
+        self,
+        f1,
+        f2,
+        gt_warp=None,
+        gt_prob=None,
+        upsample=False,
+        flow=None,
+        certainty=None,
+        scale_factor=1,
+    ):
         coarse_scales = self.embedding_decoder.scales()
-        all_scales = self.scales if not upsample else ["8", "4", "2", "1"] 
+        all_scales = self.scales if not upsample else ["8", "4", "2", "1"]
         sizes = {scale: f1[scale].shape[-2:] for scale in f1}
         h, w = sizes[1]
         b = f1[1].shape[0]
         device = f1[1].device
         coarsest_scale = int(all_scales[0])
         old_stuff = torch.zeros(
-            b, self.embedding_decoder.hidden_dim, *sizes[coarsest_scale], device=f1[coarsest_scale].device
+            b,
+            self.embedding_decoder.hidden_dim,
+            *sizes[coarsest_scale],
+            device=f1[coarsest_scale].device,
         )
         corresps = {}
         if not upsample:
@@ -351,24 +426,24 @@ class Decoder(nn.Module):
             certainty = 0.0
         else:
             flow = F.interpolate(
-                    flow,
-                    size=sizes[coarsest_scale],
-                    align_corners=False,
-                    mode="bilinear",
-                )
+                flow,
+                size=sizes[coarsest_scale],
+                align_corners=False,
+                mode="bilinear",
+            )
             certainty = F.interpolate(
-                    certainty,
-                    size=sizes[coarsest_scale],
-                    align_corners=False,
-                    mode="bilinear",
-                )
+                certainty,
+                size=sizes[coarsest_scale],
+                align_corners=False,
+                mode="bilinear",
+            )
         displacement = 0.0
         for new_scale in all_scales:
             ins = int(new_scale)
             corresps[ins] = {}
             f1_s, f2_s = f1[ins], f2[ins]
             if new_scale in self.proj:
-                with torch.autocast("cuda", enabled=self.amp, dtype = self.amp_dtype):
+                with torch.autocast("cuda", enabled=self.amp, dtype=self.amp_dtype):
                     f1_s, f2_s = self.proj[new_scale](f1_s), self.proj[new_scale](f2_s)
 
             if ins in coarse_scales:
@@ -379,32 +454,65 @@ class Decoder(nn.Module):
                 gm_warp_or_cls, certainty, old_stuff = self.embedding_decoder(
                     gp_posterior, f1_s, old_stuff, new_scale
                 )
-                
+
                 if self.embedding_decoder.is_classifier:
                     flow = cls_to_flow_refine(
                         gm_warp_or_cls,
-                    ).permute(0,3,1,2)
-                    corresps[ins].update({"gm_cls": gm_warp_or_cls,"gm_certainty": certainty,}) 
+                    ).permute(0, 3, 1, 2)
+                    corresps[ins].update(
+                        {
+                            "gm_cls": gm_warp_or_cls,
+                            "gm_certainty": certainty,
+                        }
+                    )
                 else:
-                    corresps[ins].update({"gm_flow": gm_warp_or_cls,"gm_certainty": certainty,})
+                    corresps[ins].update(
+                        {
+                            "gm_flow": gm_warp_or_cls,
+                            "gm_certainty": certainty,
+                        }
+                    )
                     flow = gm_warp_or_cls.detach()
-                    
+
             if new_scale in self.conv_refiner:
-                corresps[ins].update({"flow_pre_delta": flow}) if self.training else None
+                (
+                    corresps[ins].update({"flow_pre_delta": flow})
+                    if self.training
+                    else None
+                )
                 delta_flow, delta_certainty = self.conv_refiner[new_scale](
-                    f1_s, f2_s, flow, scale_factor = scale_factor, logits = certainty,
-                )                    
-                corresps[ins].update({"delta_flow": delta_flow,}) if self.training else None
-                displacement = ins*torch.stack((delta_flow[:, 0].float() / (self.refine_init * w),
-                                                delta_flow[:, 1].float() / (self.refine_init * h),),dim=1,)
+                    f1_s,
+                    f2_s,
+                    flow,
+                    scale_factor=scale_factor,
+                    logits=certainty,
+                )
+                (
+                    corresps[ins].update(
+                        {
+                            "delta_flow": delta_flow,
+                        }
+                    )
+                    if self.training
+                    else None
+                )
+                displacement = ins * torch.stack(
+                    (
+                        delta_flow[:, 0].float() / (self.refine_init * w),
+                        delta_flow[:, 1].float() / (self.refine_init * h),
+                    ),
+                    dim=1,
+                )
                 flow = flow + displacement
                 certainty = (
                     certainty + delta_certainty
                 )  # predict both certainty and displacement
-            corresps[ins].update({
-                "certainty": certainty,
-                "flow": flow,             
-            })
+            corresps[ins].update(
+                {
+                    "certainty": certainty,
+                    "flow": flow,
+                }
+            )
             if new_scale != "1":
                 flow = F.interpolate(
                     flow,
@@ -419,7 +527,7 @@ class Decoder(nn.Module):
                 if self.detach:
                     flow = flow.detach()
                     certainty = certainty.detach()
-            #torch.cuda.empty_cache()                
+            # torch.cuda.empty_cache()
         return corresps
 
 
@@ -430,12 +538,12 @@ class RegressionMatcher(nn.Module):
         decoder,
         h=448,
         w=448,
-        sample_mode = "threshold",
-        upsample_preds = False,
-        symmetric = False,
-        name = None,
-        attenuate_cert = None,
-        recrop_upsample = False,
+        sample_mode="threshold",
+        upsample_preds=False,
+        symmetric=False,
+        name=None,
+        attenuate_cert=None,
+        recrop_upsample=False,
     ):
         super().__init__()
         self.attenuate_cert = attenuate_cert
@@ -447,25 +555,27 @@ class RegressionMatcher(nn.Module):
         self.og_transforms = get_tuple_transform_ops(resize=None, normalize=True)
         self.sample_mode = sample_mode
         self.upsample_preds = upsample_preds
-        self.upsample_res = (14*16*6, 14*16*6)
+        self.upsample_res = (14 * 16 * 6, 14 * 16 * 6)
         self.symmetric = symmetric
         self.sample_thresh = 0.05
         self.recrop_upsample = recrop_upsample
-            
+
     def get_output_resolution(self):
         if not self.upsample_preds:
             return self.h_resized, self.w_resized
         else:
             return self.upsample_res
-    
-    def extract_backbone_features(self, batch, batched = True, upsample = False):
+
+    def extract_backbone_features(self, batch, batched=True, upsample=False):
         x_q = batch["im_A"]
         x_s = batch["im_B"]
         if batched:
-            X = torch.cat((x_q, x_s), dim = 0)
-            feature_pyramid = self.encoder(X, upsample = upsample)
+            X = torch.cat((x_q, x_s), dim=0)
+            feature_pyramid = self.encoder(X, upsample=upsample)
         else:
-            feature_pyramid = self.encoder(x_q, upsample = upsample), self.encoder(x_s, upsample = upsample)
+            feature_pyramid = self.encoder(x_q, upsample=upsample), self.encoder(
+                x_s, upsample=upsample
+            )
         return feature_pyramid
 
     def sample(
@@ -485,26 +595,32 @@ class RegressionMatcher(nn.Module):
         expansion_factor = 4 if "balanced" in self.sample_mode else 1
 
         if certainty.sum() == 0:
-            certainty[0] = 1 # Corner case, to avoid following multinormal error
+            certainty[0] = 1  # Corner case, to avoid following multinormal error
         try:
-            good_samples = torch.multinomial(certainty, 
-                            num_samples = min(expansion_factor*num, len(certainty)), 
-                            replacement=False)
+            good_samples = torch.multinomial(
+                certainty,
+                num_samples=min(expansion_factor * num, len(certainty)),
+                replacement=False,
+            )
         except:
             return matches[[0]], certainty[[0]]
         good_matches, good_certainty = matches[good_samples], certainty[good_samples]
         if "balanced" not in self.sample_mode:
             return good_matches, good_certainty
         density = kde(good_matches, std=0.1)
-        p = 1 / (density+1)
-        p[density < 10] = 1e-7 # Basically should have at least 10 perfect neighbours, or around 100 ok ones
-        balanced_samples = torch.multinomial(p, 
-                          num_samples = min(num,len(good_certainty)), 
-                          replacement=False)
+        p = 1 / (density + 1)
+        p[density < 10] = (
+            1e-7  # Basically should have at least 10 perfect neighbours, or around 100 ok ones
+        )
+        balanced_samples = torch.multinomial(
+            p, num_samples=min(num, len(good_certainty)), replacement=False
+        )
         return good_matches[balanced_samples], good_certainty[balanced_samples]
 
-    def forward(self, batch, batched = True, upsample = False, scale_factor = 1):
-        feature_pyramid = self.extract_backbone_features(batch, batched=batched, upsample = upsample)
+    def forward(self, batch, batched=True, upsample=False, scale_factor=1):
+        feature_pyramid = self.extract_backbone_features(
+            batch, batched=batched, upsample=upsample
+        )
         if batched:
             f_q_pyramid = {
                 scale: f_scale.chunk(2)[0] for scale, f_scale in feature_pyramid.items()
@@ -514,52 +630,83 @@ class RegressionMatcher(nn.Module):
             }
         else:
             f_q_pyramid, f_s_pyramid = feature_pyramid
-        corresps = self.decoder(f_q_pyramid, 
-                                f_s_pyramid, 
-                                upsample = upsample, 
-                                **(batch["corresps"] if "corresps" in batch else {}),
-                                scale_factor=scale_factor)
-        
+        corresps = self.decoder(
+            f_q_pyramid,
+            f_s_pyramid,
+            upsample=upsample,
+            **(batch["corresps"] if "corresps" in batch else {}),
+            scale_factor=scale_factor,
+        )
+
         return corresps
 
-    def forward_symmetric(self, batch, batched = True, upsample = False, scale_factor = 1):
-        feature_pyramid = self.extract_backbone_features(batch, batched = batched, upsample = upsample)
+    def forward_symmetric(self, batch, batched=True, upsample=False, scale_factor=1):
+        feature_pyramid = self.extract_backbone_features(
+            batch, batched=batched, upsample=upsample
+        )
         f_q_pyramid = feature_pyramid
         f_s_pyramid = {
-            scale: torch.cat((f_scale.chunk(2)[1], f_scale.chunk(2)[0]), dim = 0)
+            scale: torch.cat((f_scale.chunk(2)[1], f_scale.chunk(2)[0]), dim=0)
             for scale, f_scale in feature_pyramid.items()
         }
-        corresps = self.decoder(f_q_pyramid, 
-                                f_s_pyramid, 
-                                upsample = upsample, 
-                                **(batch["corresps"] if "corresps" in batch else {}),
-                                scale_factor=scale_factor)
+        corresps = self.decoder(
+            f_q_pyramid,
+            f_s_pyramid,
+            upsample=upsample,
+            **(batch["corresps"] if "corresps" in batch else {}),
+            scale_factor=scale_factor,
+        )
         return corresps
-    
+
     def to_pixel_coordinates(self, coords, H_A, W_A, H_B, W_B):
         if isinstance(coords, (list, tuple)):
             kpts_A, kpts_B = coords[0], coords[1]
         else:
-            kpts_A, kpts_B = coords[...,:2], coords[...,2:]
-        kpts_A = torch.stack((W_A/2 * (kpts_A[...,0]+1), H_A/2 * (kpts_A[...,1]+1)),axis=-1)
-        kpts_B = torch.stack((W_B/2 * (kpts_B[...,0]+1), H_B/2 * (kpts_B[...,1]+1)),axis=-1)
+            kpts_A, kpts_B = coords[..., :2], coords[..., 2:]
+        kpts_A = torch.stack(
+            (W_A / 2 * (kpts_A[..., 0] + 1), H_A / 2 * (kpts_A[..., 1] + 1)), axis=-1
+        )
+        kpts_B = torch.stack(
+            (W_B / 2 * (kpts_B[..., 0] + 1), H_B / 2 * (kpts_B[..., 1] + 1)), axis=-1
+        )
         return kpts_A, kpts_B
-    
+
     def to_normalized_coordinates(self, coords, H_A, W_A, H_B, W_B):
         if isinstance(coords, (list, tuple)):
             kpts_A, kpts_B = coords[0], coords[1]
         else:
-            kpts_A, kpts_B = coords[...,:2], coords[...,2:]
-        kpts_A = torch.stack((2/W_A * kpts_A[...,0] - 1, 2/H_A * kpts_A[...,1] - 1),axis=-1)
-        kpts_B = torch.stack((2/W_B * kpts_B[...,0] - 1, 2/H_B * kpts_B[...,1] - 1),axis=-1)
+            kpts_A, kpts_B = coords[..., :2], coords[..., 2:]
+        kpts_A = torch.stack(
+            (2 / W_A * kpts_A[..., 0] - 1, 2 / H_A * kpts_A[..., 1] - 1), axis=-1
+        )
+        kpts_B = torch.stack(
+            (2 / W_B * kpts_B[..., 0] - 1, 2 / H_B * kpts_B[..., 1] - 1), axis=-1
+        )
         return kpts_A, kpts_B
 
-    def match_keypoints(self, x_A, x_B, warp, certainty, return_tuple = True, return_inds = False):
-        x_A_to_B = F.grid_sample(warp[...,-2:].permute(2,0,1)[None], x_A[None,None], align_corners = False, mode = "bilinear")[0,:,0].mT
-        cert_A_to_B = F.grid_sample(certainty[None,None,...], x_A[None,None], align_corners = False, mode = "bilinear")[0,0,0]
+    def match_keypoints(
+        self, x_A, x_B, warp, certainty, return_tuple=True, return_inds=False
+    ):
+        x_A_to_B = F.grid_sample(
+            warp[..., -2:].permute(2, 0, 1)[None],
+            x_A[None, None],
+            align_corners=False,
+            mode="bilinear",
+        )[0, :, 0].mT
+        cert_A_to_B = F.grid_sample(
+            certainty[None, None, ...],
+            x_A[None, None],
+            align_corners=False,
+            mode="bilinear",
+        )[0, 0, 0]
         D = torch.cdist(x_A_to_B, x_B)
-        inds_A, inds_B = torch.nonzero((D == D.min(dim=-1, keepdim = True).values) * (D == D.min(dim=-2, keepdim = True).values) * (cert_A_to_B[:,None] > self.sample_thresh), as_tuple = True)
-        
+        inds_A, inds_B = torch.nonzero(
+            (D == D.min(dim=-1, keepdim=True).values)
+            * (D == D.min(dim=-2, keepdim=True).values)
+            * (cert_A_to_B[:, None] > self.sample_thresh),
+            as_tuple=True,
+        )
+
         if return_tuple:
             if return_inds:
                 return inds_A, inds_B
@@ -567,35 +714,50 @@ class RegressionMatcher(nn.Module):
                 return x_A[inds_A], x_B[inds_B]
         else:
             if return_inds:
-                return torch.cat((inds_A, inds_B),dim=-1)
+                return torch.cat((inds_A, inds_B), dim=-1)
             else:
-                return torch.cat((x_A[inds_A], x_B[inds_B]),dim=-1)
+                return torch.cat((x_A[inds_A], x_B[inds_B]), dim=-1)
 
     def warp_keypoints(self, x_A, warp, certainty, H_A, W_A, H_B, W_B):
-        H,W2,_ = warp.shape
-        W = W2//2 if self.symmetric else W2
+        H, W2, _ = warp.shape
+        W = W2 // 2 if self.symmetric else W2
         # To normalized coords:
-        x_A_norm = torch.stack((2/W_A * x_A[...,0] - 1, 2/H_A * x_A[...,1] - 1),axis=-1)
-        x_A_to_B = F.grid_sample(warp[:,:W, 2:].permute(2,0,1)[None], x_A_norm[None,None], align_corners = False, mode = "bilinear")[0,:,0].mT
-        cert_A_to_B = F.grid_sample(certainty[None,None,:,:W], x_A_norm[None,None], align_corners = False, mode = "bilinear")[0,0,0]
+        x_A_norm = torch.stack(
+            (2 / W_A * x_A[..., 0] - 1, 2 / H_A * x_A[..., 1] - 1), axis=-1
+        )
+        x_A_to_B = F.grid_sample(
+            warp[:, :W, 2:].permute(2, 0, 1)[None],
+            x_A_norm[None, None],
+            align_corners=False,
+            mode="bilinear",
+        )[0, :, 0].mT
+        cert_A_to_B = F.grid_sample(
+            certainty[None, None, :, :W],
+            x_A_norm[None, None],
+            align_corners=False,
+            mode="bilinear",
+        )[0, 0, 0]
 
         # To origin coords:
-        x_A_to_B = torch.stack((W_B/2 * (x_A_to_B[...,0]+1), H_B/2 * (x_A_to_B[...,1]+1)),axis=-1)
+        x_A_to_B = torch.stack(
+            (W_B / 2 * (x_A_to_B[..., 0] + 1), H_B / 2 * (x_A_to_B[..., 1] + 1)),
+            axis=-1,
+        )
         return x_A_to_B, cert_A_to_B
-    
-    def get_roi(self, certainty, W, H, thr = 0.025):
+
+    def get_roi(self, certainty, W, H, thr=0.025):
         raise NotImplementedError("WIP, disable for now")
-        hs,ws = certainty.shape
-        certainty = certainty/certainty.sum(dim=(-1,-2))
+        hs, ws = certainty.shape
+        certainty = certainty / certainty.sum(dim=(-1, -2))
         cum_certainty_w = certainty.cumsum(dim=-1).sum(dim=-2)
         cum_certainty_h = certainty.cumsum(dim=-2).sum(dim=-1)
         print(cum_certainty_w)
         print(torch.min(torch.nonzero(cum_certainty_w > thr)))
         print(torch.min(torch.nonzero(cum_certainty_w < thr)))
-        left = int(W/ws * torch.min(torch.nonzero(cum_certainty_w > thr)))
-        right = int(W/ws * torch.max(torch.nonzero(cum_certainty_w < 1 - thr)))
-        top = int(H/hs * torch.min(torch.nonzero(cum_certainty_h > thr)))
-        bottom = int(H/hs * torch.max(torch.nonzero(cum_certainty_h < 1 - thr)))
+        left = int(W / ws * torch.min(torch.nonzero(cum_certainty_w > thr)))
+        right = int(W / ws * torch.max(torch.nonzero(cum_certainty_w < 1 - thr)))
+        top = int(H / hs * torch.min(torch.nonzero(cum_certainty_h > thr)))
+        bottom = int(H / hs * torch.max(torch.nonzero(cum_certainty_h < 1 - thr)))
         print(left, right, top, bottom)
         return left, top, right, bottom
 
@@ -610,26 +772,25 @@ class RegressionMatcher(nn.Module):
         corresps,
         finest_scale=1,
     ):
-        B, C, hs, ws = data['image0'].shape
-        device = data['image0'].device
-        im_A_to_im_B = corresps[finest_scale]["flow"] 
+        B, C, hs, ws = data["image0"].shape
+        device = data["image0"].device
+        im_A_to_im_B = corresps[finest_scale]["flow"]
         certainty = corresps[finest_scale]["certainty"]
         if finest_scale != 1:
             im_A_to_im_B = F.interpolate(
-            im_A_to_im_B, size=(hs, ws), align_corners=False, mode="bilinear"
+                im_A_to_im_B, size=(hs, ws), align_corners=False, mode="bilinear"
             )
             certainty = F.interpolate(
-            certainty, size=(hs, ws), align_corners=False, mode="bilinear"
+                certainty, size=(hs, ws), align_corners=False, mode="bilinear"
             )
-        im_A_to_im_B = im_A_to_im_B.permute(
-            0, 2, 3, 1
-            )
+        im_A_to_im_B = im_A_to_im_B.permute(0, 2, 3, 1)
         # Create im_A meshgrid
         im_A_coords = torch.meshgrid(
             (
                 torch.linspace(-1 + 1 / hs, 1 - 1 / hs, hs, device=device),
                 torch.linspace(-1 + 1 / ws, 1 - 1 / ws, ws, device=device),
-            )
+            ),
+            indexing="ij",
         )
         im_A_coords = torch.stack((im_A_coords[1], im_A_coords[0]))
         im_A_coords = im_A_coords[None].expand(B, 2, hs, ws)
@@ -637,27 +798,34 @@ class RegressionMatcher(nn.Module):
         im_A_coords = im_A_coords.permute(0, 2, 3, 1)
         if (im_A_to_im_B.abs() > 1).any() and True:
             wrong = (im_A_to_im_B.abs() > 1).sum(dim=-1) > 0
-            certainty[wrong[:,None]] = 0
+            certainty[wrong[:, None]] = 0
         im_A_to_im_B = torch.clamp(im_A_to_im_B, -1, 1)
         warp = torch.cat((im_A_coords, im_A_to_im_B), dim=-1)
-        return (
-            warp,
-            certainty[:, 0]
-        )
+        return (warp, certainty[:, 0])
 
     @torch.no_grad()
     def self_inference_time_match(
         self,
         im_A_org,
         im_B_org,
-        device = None,
+        device=None,
         resize_by_stretch=False,
         norm_img=False,
     ):
         if isinstance(im_A_org, (str, os.PathLike)):
-            im_A_org = torch.from_numpy(np.array(Image.open(im_A_org).convert("RGB"))).permute(2,0,1) / 255.
-            im_B_org = torch.from_numpy(np.array(Image.open(im_B_org).convert("RGB"))).permute(2,0,1) / 255.
-        
+            im_A_org = (
+                torch.from_numpy(np.array(Image.open(im_A_org).convert("RGB"))).permute(
+                    2, 0, 1
+                )
+                / 255.0
+            )
+            im_B_org = (
+                torch.from_numpy(np.array(Image.open(im_B_org).convert("RGB"))).permute(
+                    2, 0, 1
+                )
+                / 255.0
+            )
+
         symmetric = self.symmetric
         self.train(False)
         with torch.no_grad():
@@ -673,9 +841,13 @@ class RegressionMatcher(nn.Module):
                 im_B = resize_by_longest_edge_and_padding(im_B_org, hs)
 
             if norm_img:
-                im_A = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(im_A) # Input: 3*H*W
-                im_B = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(im_B) # Input: 3*H*W
-            
+                im_A = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(
+                    im_A
+                )  # Input: 3*H*W
+                im_B = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(
+                    im_B
+                )  # Input: 3*H*W
+
             if device is None:
                 batch = {"im_A": im_A[None], "im_B": im_B[None]}
             else:
@@ -684,20 +856,25 @@ class RegressionMatcher(nn.Module):
             finest_scale = 1
             # Run matcher
             if symmetric:
-                corresps  = self.forward_symmetric(batch)
+                corresps = self.forward_symmetric(batch)
             else:
-                corresps = self.forward(batch, batched = True)
+                corresps = self.forward(batch, batched=True)
 
             if self.upsample_preds:
                 hs, ws = self.upsample_res
-            
+
             if self.attenuate_cert:
                 low_res_certainty = F.interpolate(
-                corresps[16]["certainty"], size=(hs, ws), align_corners=False, mode="bilinear"
+                    corresps[16]["certainty"],
+                    size=(hs, ws),
+                    align_corners=False,
+                    mode="bilinear",
                 )
                 cert_clamp = 0
                 factor = 0.5
-                low_res_certainty = factor*low_res_certainty*(low_res_certainty < cert_clamp)
+                low_res_certainty = (
+                    factor * low_res_certainty * (low_res_certainty < cert_clamp)
+                )
 
             if self.upsample_preds:
                 finest_corresps = corresps[finest_scale]
@@ -711,38 +888,55 @@ class RegressionMatcher(nn.Module):
                     im_B = resize_by_longest_edge_and_padding(im_B_org, hs)
 
                 if norm_img:
-                    im_A = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(im_A) # Input: 3*H*W
-                    im_B = Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])(im_B) # Input: 3*H*W
+                    im_A = Normalize(
+                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                    )(
+                        im_A
+                    )  # Input: 3*H*W
+                    im_B = Normalize(
+                        mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                    )(
+                        im_B
+                    )  # Input: 3*H*W
 
                 if device is None:
                     im_A, im_B = im_A[None], im_B[None]
                 else:
                     im_A, im_B = im_A[None].to(device), im_B[None].to(device)
-                scale_factor = math.sqrt(self.upsample_res[0] * self.upsample_res[1] / (self.w_resized * self.h_resized))
+                scale_factor = math.sqrt(
+                    self.upsample_res[0]
+                    * self.upsample_res[1]
+                    / (self.w_resized * self.h_resized)
+                )
                 batch = {"im_A": im_A, "im_B": im_B, "corresps": finest_corresps}
                 if symmetric:
-                    corresps = self.forward_symmetric(batch, upsample = True, batched=True, scale_factor = scale_factor)
+                    corresps = self.forward_symmetric(
+                        batch, upsample=True, batched=True, scale_factor=scale_factor
+                    )
                 else:
-                    corresps = self.forward(batch, batched = True, upsample=True, scale_factor = scale_factor)
-            
-            im_A_to_im_B = corresps[finest_scale]["flow"] 
-            certainty = corresps[finest_scale]["certainty"] - (low_res_certainty if self.attenuate_cert else 0)
+                    corresps = self.forward(
+                        batch, batched=True, upsample=True, scale_factor=scale_factor
+                    )
+
+            im_A_to_im_B = corresps[finest_scale]["flow"]
+            certainty = corresps[finest_scale]["certainty"] - (
+                low_res_certainty if self.attenuate_cert else 0
+            )
             if finest_scale != 1:
                 im_A_to_im_B = F.interpolate(
-                im_A_to_im_B, size=(hs, ws), align_corners=False, mode="bilinear"
+                    im_A_to_im_B, size=(hs, ws), align_corners=False, mode="bilinear"
                 )
                 certainty = F.interpolate(
-                certainty, size=(hs, ws), align_corners=False, mode="bilinear"
+                    certainty, size=(hs, ws), align_corners=False, mode="bilinear"
                 )
-            im_A_to_im_B = im_A_to_im_B.permute(
-                0, 2, 3, 1
-                )
+            im_A_to_im_B = im_A_to_im_B.permute(0, 2, 3, 1)
             # Create im_A meshgrid
             im_A_coords = torch.meshgrid(
                 (
                     torch.linspace(-1 + 1 / hs, 1 - 1 / hs, hs, device=im_A.device),
                     torch.linspace(-1 + 1 / ws, 1 - 1 / ws, ws, device=im_A.device),
-                )
+                ),
+                indexing="ij",
             )
             im_A_coords = torch.stack((im_A_coords[1], im_A_coords[0]))
             im_A_coords = im_A_coords[None].expand(b, 2, hs, ws)
@@ -750,14 +944,14 @@ class RegressionMatcher(nn.Module):
             im_A_coords = im_A_coords.permute(0, 2, 3, 1)
             if (im_A_to_im_B.abs() > 1).any() and True:
                 wrong = (im_A_to_im_B.abs() > 1).sum(dim=-1) > 0
-                certainty[wrong[:,None]] = 0
+                certainty[wrong[:, None]] = 0
             im_A_to_im_B = torch.clamp(im_A_to_im_B, -1, 1)
             if symmetric:
                 A_to_B, B_to_A = im_A_to_im_B.chunk(2)
                 q_warp = torch.cat((im_A_coords, A_to_B), dim=-1)
                 im_B_coords = im_A_coords
                 s_warp = torch.cat((B_to_A, im_B_coords), dim=-1)
-                warp = torch.cat((q_warp, s_warp),dim=2)
+                warp = torch.cat((q_warp, s_warp), dim=2)
                 certainty = torch.cat(certainty.chunk(2), dim=3)
             else:
                 warp = torch.cat((im_A_coords, im_A_to_im_B), dim=-1)
@@ -765,7 +959,7 @@ class RegressionMatcher(nn.Module):
                 warp[0],
                 certainty[0, 0],
             )
-        
+
     @torch.inference_mode()
     def match(
         self,
@@ -773,10 +967,12 @@ class RegressionMatcher(nn.Module):
         im_B_path,
         *args,
         batched=False,
-        device = None,
+        device=None,
     ):
         if isinstance(im_A_path, (str, os.PathLike)):
-            im_A, im_B = Image.open(im_A_path).convert("RGB"), Image.open(im_B_path).convert("RGB")
+            im_A, im_B = Image.open(im_A_path).convert("RGB"), Image.open(
+                im_B_path
+            ).convert("RGB")
         else:
             # Assume its not a path
             im_A, im_B = im_A_path, im_B_path
@@ -794,15 +990,18 @@ class RegressionMatcher(nn.Module):
                 # Get images in good format
                 ws = self.w_resized
                 hs = self.h_resized
-                
+
                 test_transform = get_tuple_transform_ops(
-                    resize=(hs, ws), normalize=True, clahe = False
+                    resize=(hs, ws), normalize=True, clahe=False
                 )
                 im_A, im_B = test_transform((im_A, im_B))
                 if device is None:
                     batch = {"im_A": im_A[None], "im_B": im_B[None]}
                 else:
-                    batch = {"im_A": im_A[None].to(device), "im_B": im_B[None].to(device)}
+                    batch = {
+                        "im_A": im_A[None].to(device),
+                        "im_B": im_B[None].to(device),
+                    }
             else:
                 b, c, h, w = im_A.shape
                 b, c, h2, w2 = im_B.shape
@@ -812,25 +1011,32 @@ class RegressionMatcher(nn.Module):
                 else:
                     batch = {"im_A": im_A.to(device), "im_B": im_B.to(device)}
                 if h != self.h_resized or self.w_resized != w:
-                    warn("Model resolution and batch resolution differ, may produce unexpected results")
+                    warn(
+                        "Model resolution and batch resolution differ, may produce unexpected results"
+                    )
                 hs, ws = h, w
             finest_scale = 1
             # Run matcher
             if symmetric:
-                corresps  = self.forward_symmetric(batch)
+                corresps = self.forward_symmetric(batch)
             else:
-                corresps = self.forward(batch, batched = True)
+                corresps = self.forward(batch, batched=True)
 
             if self.upsample_preds:
                 hs, ws = self.upsample_res
-            
+
             if self.attenuate_cert:
                 low_res_certainty = F.interpolate(
-                corresps[16]["certainty"], size=(hs, ws), align_corners=False, mode="bilinear"
+                    corresps[16]["certainty"],
+                    size=(hs, ws),
+                    align_corners=False,
+                    mode="bilinear",
                 )
                 cert_clamp = 0
                 factor = 0.5
-                low_res_certainty = factor*low_res_certainty*(low_res_certainty < cert_clamp)
+                low_res_certainty = (
+                    factor * low_res_certainty * (low_res_certainty < cert_clamp)
+                )
 
             if self.upsample_preds:
                 finest_corresps = corresps[finest_scale]
@@ -840,12 +1046,14 @@ class RegressionMatcher(nn.Module):
                 if self.recrop_upsample:
                     certainty = corresps[finest_scale]["certainty"]
                     print(certainty.shape)
-                    im_A = self.recrop(certainty[0,0], im_A_path)
-                    im_B = self.recrop(certainty[1,0], im_B_path)
-                    #TODO: need to adjust corresps when doing this
+                    im_A = self.recrop(certainty[0, 0], im_A_path)
+                    im_B = self.recrop(certainty[1, 0], im_B_path)
+                    # TODO: need to adjust corresps when doing this
                 else:
                     if isinstance(im_A_path, (str, os.PathLike)):
-                        im_A, im_B = Image.open(im_A_path).convert("RGB"), Image.open(im_B_path).convert("RGB")
+                        im_A, im_B = Image.open(im_A_path).convert("RGB"), Image.open(
+                            im_B_path
+                        ).convert("RGB")
                     else:
                         # Assume its not a path
                         im_A, im_B = im_A_path, im_B_path
@@ -855,31 +1063,40 @@ class RegressionMatcher(nn.Module):
                     im_A, im_B = im_A[None], im_B[None]
                 else:
                     im_A, im_B = im_A[None].to(device), im_B[None].to(device)
-                scale_factor = math.sqrt(self.upsample_res[0] * self.upsample_res[1] / (self.w_resized * self.h_resized))
+                scale_factor = math.sqrt(
+                    self.upsample_res[0]
+                    * self.upsample_res[1]
+                    / (self.w_resized * self.h_resized)
+                )
                 batch = {"im_A": im_A, "im_B": im_B, "corresps": finest_corresps}
                 if symmetric:
-                    corresps = self.forward_symmetric(batch, upsample = True, batched=True, scale_factor = scale_factor)
+                    corresps = self.forward_symmetric(
+                        batch, upsample=True, batched=True, scale_factor=scale_factor
+                    )
                 else:
-                    corresps = self.forward(batch, batched = True, upsample=True, scale_factor = scale_factor)
-            
-            im_A_to_im_B = corresps[finest_scale]["flow"] 
-            certainty = corresps[finest_scale]["certainty"] - (low_res_certainty if self.attenuate_cert else 0)
+                    corresps = self.forward(
+                        batch, batched=True, upsample=True, scale_factor=scale_factor
+                    )
+
+            im_A_to_im_B = corresps[finest_scale]["flow"]
+            certainty = corresps[finest_scale]["certainty"] - (
+                low_res_certainty if self.attenuate_cert else 0
+            )
             if finest_scale != 1:
                 im_A_to_im_B = F.interpolate(
-                im_A_to_im_B, size=(hs, ws), align_corners=False, mode="bilinear"
+                    im_A_to_im_B, size=(hs, ws), align_corners=False, mode="bilinear"
                 )
                 certainty = F.interpolate(
-                certainty, size=(hs, ws), align_corners=False, mode="bilinear"
+                    certainty, size=(hs, ws), align_corners=False, mode="bilinear"
                 )
-            im_A_to_im_B = im_A_to_im_B.permute(
-                0, 2, 3, 1
-                )
+            im_A_to_im_B = im_A_to_im_B.permute(0, 2, 3, 1)
             # Create im_A meshgrid
             im_A_coords = torch.meshgrid(
                 (
                     torch.linspace(-1 + 1 / hs, 1 - 1 / hs, hs, device=im_A.device),
                     torch.linspace(-1 + 1 / ws, 1 - 1 / ws, ws, device=im_A.device),
-                )
+                ),
+                indexing="ij",
             )
             im_A_coords = torch.stack((im_A_coords[1], im_A_coords[0]))
             im_A_coords = im_A_coords[None].expand(b, 2, hs, ws)
@@ -887,51 +1104,63 @@ class RegressionMatcher(nn.Module):
             im_A_coords = im_A_coords.permute(0, 2, 3, 1)
             if (im_A_to_im_B.abs() > 1).any() and True:
                 wrong = (im_A_to_im_B.abs() > 1).sum(dim=-1) > 0
-                certainty[wrong[:,None]] = 0
+                certainty[wrong[:, None]] = 0
             im_A_to_im_B = torch.clamp(im_A_to_im_B, -1, 1)
             if symmetric:
                 A_to_B, B_to_A = im_A_to_im_B.chunk(2)
                 q_warp = torch.cat((im_A_coords, A_to_B), dim=-1)
                 im_B_coords = im_A_coords
                 s_warp = torch.cat((B_to_A, im_B_coords), dim=-1)
-                warp = torch.cat((q_warp, s_warp),dim=2)
+                warp = torch.cat((q_warp, s_warp), dim=2)
                 certainty = torch.cat(certainty.chunk(2), dim=3)
             else:
                 warp = torch.cat((im_A_coords, im_A_to_im_B), dim=-1)
             if batched:
-                return (
-                    warp,
-                    certainty[:, 0]
-                )
+                return (warp, certainty[:, 0])
             else:
                 return (
                     warp[0],
                     certainty[0, 0],
                 )
-                
-    def visualize_warp(self, warp, certainty, im_A = None, im_B = None, im_A_path = None, im_B_path = None, device = "cuda", symmetric = True, save_path = None):
-        assert symmetric == True, "Currently assuming bidirectional warp, might update this if someone complains ;)"
-        H,W2,_ = warp.shape
-        W = W2//2 if symmetric else W2
+
+    def visualize_warp(
+        self,
+        warp,
+        certainty,
+        im_A=None,
+        im_B=None,
+        im_A_path=None,
+        im_B_path=None,
+        device="cuda",
+        symmetric=True,
+        save_path=None,
+    ):
+        assert (
+            symmetric == True
+        ), "Currently assuming bidirectional warp, might update this if someone complains ;)"
+        H, W2, _ = warp.shape
+        W = W2 // 2 if symmetric else W2
         if im_A is None:
             from PIL import Image
+
             im_A, im_B = Image.open(im_A_path), Image.open(im_B_path)
-        im_A = im_A.resize((W,H))
-        im_B = im_B.resize((W,H))
-            
+        im_A = im_A.resize((W, H))
+        im_B = im_B.resize((W, H))
+
         x_A = (torch.tensor(np.array(im_A)) / 255).to(device).permute(2, 0, 1)
         x_B = (torch.tensor(np.array(im_B)) / 255).to(device).permute(2, 0, 1)
 
         im_A_transfer_rgb = F.grid_sample(
-        x_B[None], warp[:,:W, 2:][None], mode="bilinear", align_corners=False
+            x_B[None], warp[:, :W, 2:][None], mode="bilinear", align_corners=False
         )[0]
         im_B_transfer_rgb = F.grid_sample(
-        x_A[None], warp[:, W:, :2][None], mode="bilinear", align_corners=False
+            x_A[None], warp[:, W:, :2][None], mode="bilinear", align_corners=False
         )[0]
-        warp_im = torch.cat((im_A_transfer_rgb,im_B_transfer_rgb),dim=2)
-        white_im = torch.ones((H,2*W),device=device)
+        warp_im = torch.cat((im_A_transfer_rgb, im_B_transfer_rgb), dim=2)
+        white_im = torch.ones((H, 2 * W), device=device)
         vis_im = certainty * warp_im + (1 - certainty) * white_im
         if save_path is not None:
             from roma_model.utils import tensor_to_pil
+
             tensor_to_pil(vis_im, unnormalize=False).save(save_path)
         return vis_im

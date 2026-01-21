@@ -30,7 +30,7 @@ from PIL import Image
 
 # Import standalone roma_model
 from roma_model import get_roma_model
-from roma_config import get_roma_config
+from roma_config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -46,15 +46,7 @@ class RomaMatcher:
     def __init__(
         self,
         checkpoint_path: str,
-        confidence_threshold: float = 0.1,
-        num_samples: int = 5000,
         device: str = "cuda",
-        resize_by_stretch: bool = True,
-        normalize_images: bool = False,
-        coarse_resolution: Tuple[int, int] = (560, 560),
-        upsample_resolution: Tuple[int, int] = (864, 864),
-        use_symmetric_matching: bool = True,
-        use_certainty_attenuation: bool = True,
     ):
         """
         Initialize the ROMA matcher.
@@ -72,13 +64,18 @@ class RomaMatcher:
             use_certainty_attenuation: Whether to attenuate certainty scores
         """
         self.checkpoint_path = Path(checkpoint_path)
-        self.confidence_threshold = confidence_threshold
-        self.num_samples = num_samples
+
+        self.config = get_config()
+
+        self.confidence_threshold = self.config["match_thresh"]
+        self.num_samples = self.config["sample"]["n_sample"]
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-        self.resize_by_stretch = resize_by_stretch
-        self.normalize_images = normalize_images
-        self.coarse_resolution = coarse_resolution
-        self.upsample_resolution = upsample_resolution
+        self.resize_by_stretch = self.config["resize_by_stretch"]
+        self.normalize_images = self.config["normalize_img"]
+        self.coarse_resolution = self.config["test_time"]["coarse_res"]
+        self.upsample_resolution = self.config["test_time"]["upsample_res"]
+        self.use_symmetric_matching = self.config["test_time"]["symmetric"]
+        self.use_certainty_attenuation = self.config["test_time"]["attenuate_cert"]
 
         # Verify checkpoint exists
         if not self.checkpoint_path.exists():
@@ -88,31 +85,12 @@ class RomaMatcher:
                 f"https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view"
             )
 
-        # Store configuration
-        self.config = {
-            "confidence_threshold": confidence_threshold,
-            "num_samples": num_samples,
-            "resize_by_stretch": resize_by_stretch,
-            "normalize_images": normalize_images,
-            "coarse_resolution": coarse_resolution,
-            "upsample_resolution": upsample_resolution,
-            "use_symmetric_matching": use_symmetric_matching,
-            "use_certainty_attenuation": use_certainty_attenuation,
-        }
-
         # Initialize model
         logger.info("Initializing ROMA model...")
-        self.model = self._load_model(
-            coarse_resolution=coarse_resolution,
-            upsample_resolution=upsample_resolution,
-            symmetric=use_symmetric_matching,
-            attenuate_cert=use_certainty_attenuation,
-        )
+        self.model = self._load_model()
         logger.info("ROMA model loaded successfully")
 
-    def _load_model(
-        self, coarse_resolution, upsample_resolution, symmetric, attenuate_cert
-    ):
+    def _load_model(self):
         """Load the ROMA model with pretrained weights."""
         logger.info(f"Loading checkpoint from {self.checkpoint_path}")
 
@@ -120,15 +98,20 @@ class RomaMatcher:
         model = get_roma_model(
             checkpoint_path=str(self.checkpoint_path),
             device=str(self.device),
-            coarse_resolution=coarse_resolution,
-            upsample_resolution=upsample_resolution,
-            symmetric=symmetric,
-            attenuate_cert=attenuate_cert,
+            amp=self.config["model"]["amp"],
+            coarse_backbone_type=self.config["model"]["coarse_backbone"],
+            coarse_feat_dim=self.config["model"]["coarse_feat_dim"],
+            medium_feat_dim=self.config["model"]["medium_feat_dim"],
+            coarse_patch_size=self.config["model"]["coarse_patch_size"],
+            coarse_resolution=self.config["test_time"]["coarse_res"],
+            upsample_resolution=self.config["test_time"]["upsample_res"],
+            symmetric=self.config["test_time"]["symmetric"],
+            attenuate_cert=self.config["test_time"]["attenuate_cert"],
         )
 
         # Set sampling parameters
-        model.sample_mode = "threshold_balanced"
-        model.sample_thresh = 0.05
+        model.sample_mode = self.config["sample"]["method"]
+        model.sample_thresh = self.config["sample"]["thresh"]
 
         return model
 
@@ -187,6 +170,8 @@ class RomaMatcher:
         img1_tensor = self._prepare_image(destination_image)
 
         # Run ROMA inference using self_inference_time_match
+        print("im0_tensor shape:", img0_tensor.shape)
+        print("im1_tensor shape:", img1_tensor.shape)
         with torch.no_grad():
             warp, certainty = self.model.self_inference_time_match(
                 img0_tensor.to(self.device),
@@ -210,6 +195,27 @@ class RomaMatcher:
 
         # Convert to pixel coordinates
         kpts0, kpts1 = self.model.to_pixel_coordinates(matches, H_A, W_A, H_B, W_B)
+
+        # Plot detected matches before filtering
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+        ax[0].imshow(source_image.astype(np.float32) / 255.0)
+        ax[1].imshow(destination_image.astype(np.float32) / 255.0)
+        for i in range(0, kpts0.shape[0], 100):
+            ax[0].scatter(
+                kpts0[i, 0].cpu().numpy(),
+                kpts0[i, 1].cpu().numpy(),
+                s=300,
+                marker=r"${}$".format(i),
+            )
+            ax[1].scatter(
+                kpts1[i, 0].cpu().numpy(),
+                kpts1[i, 1].cpu().numpy(),
+                s=300,
+                marker=r"${}$".format(i),
+            )
+        plt.show()
 
         # Apply confidence threshold
         mask = certainty_sampled > self.confidence_threshold
@@ -364,8 +370,6 @@ def detect_points_roma(
     """
     matcher = RomaMatcher(
         checkpoint_path=checkpoint_path,
-        confidence_threshold=confidence_threshold,
-        **kwargs,
     )
 
     return matcher.detect_points(

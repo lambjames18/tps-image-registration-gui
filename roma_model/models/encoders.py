@@ -5,6 +5,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as tvm
 import gc
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
 
 
 class ResNet50(nn.Module):

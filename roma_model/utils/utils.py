@@ -274,7 +274,8 @@ def cls_to_flow(cls, deterministic_sampling=True):
         *[
             torch.linspace(-1 + 1 / res, 1 - 1 / res, steps=res, device=device)
             for _ in range(2)
-        ]
+        ],
+        indexing="ij",
     )
     G = torch.stack([G[1], G[0]], dim=-1).reshape(C, 2)
     if deterministic_sampling:
@@ -296,7 +297,8 @@ def cls_to_flow_refine(cls):
         *[
             torch.linspace(-1 + 1 / res, 1 - 1 / res, steps=res, device=device)
             for _ in range(2)
-        ]
+        ],
+        indexing="ij",
     )
     G = torch.stack([G[1], G[0]], dim=-1).reshape(C, 2)
     cls = cls.softmax(dim=1)
@@ -341,7 +343,8 @@ def get_gt_warp(
             *[
                 torch.linspace(-1 + 1 / n, 1 - 1 / n, n, device=depth1.device)
                 for n in (B, H, W)
-            ]
+            ],
+            indexing="ij",
         )
         x1_n = torch.stack((x1_n[2], x1_n[1]), dim=-1).reshape(B, H * W, 2)
         mask, x2 = warp_kpts(
@@ -667,7 +670,8 @@ def signed_left_to_right_epipolar_distance(pts1, pts2, Fm):
 
 def get_grid(b, h, w, device):
     grid = torch.meshgrid(
-        *[torch.linspace(-1 + 1 / n, 1 - 1 / n, n, device=device) for n in (b, h, w)]
+        *[torch.linspace(-1 + 1 / n, 1 - 1 / n, n, device=device) for n in (b, h, w)],
+        indexing="ij",
     )
     grid = torch.stack((grid[2], grid[1]), dim=-1).reshape(b, h, w, 2)
     return grid
