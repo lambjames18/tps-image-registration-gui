@@ -330,8 +330,27 @@ class ApplicationPresenter:
         """Get the current checkpoint path for MatchAnything."""
         return PointAutoIdentifier.checkpoint_path
 
-    def auto_detect_points(self, method: str) -> None:
-        """Automatically detect control points using specified method."""
+    def auto_detect_points(self, method: str, **kwargs) -> None:
+        """Automatically detect control points using specified method.
+
+        Args:
+            method: Detection method ('sift' or 'matchanything')
+            **kwargs: Method-specific parameters:
+                For SIFT:
+                    - max_ratio: Lowe's ratio test threshold (default: 0.75)
+                    - min_matches: Minimum matches required (default: 4)
+                    - sigma: Gaussian blur sigma (default: 0.5)
+                    - num_samples: Number of RANSAC samples (default: 10)
+                    - ransac_threshold: RANSAC inlier threshold (default: 5.5)
+                    - ransac_max_trials: Max RANSAC iterations (default: 1000)
+                    - ransac_method: RANSAC method (default: 'deformable')
+                For MatchAnything:
+                    - num_samples: Number of point samples (default: 10)
+                    - ransac_filter: Enable RANSAC filtering (default: True)
+                    - ransac_threshold: RANSAC threshold (default: 0.05)
+                    - ransac_max_trials: Max RANSAC iterations (default: 100)
+                    - ransac_method: RANSAC method (default: 'deformable')
+        """
         try:
             if self.source_image is None or self.destination_image is None:
                 raise ValueError("Both source and destination images must be loaded.")
@@ -339,9 +358,9 @@ class ApplicationPresenter:
             # Get current images
             src_img, dst_img = self.get_current_images(normalize=True)
 
-            # Create kwargs for point detection
+            # Set default kwargs if not provided
             if method == "sift":
-                kwargs = {
+                defaults = {
                     "max_ratio": 0.75,
                     "min_matches": 4,
                     "sigma": 0.5,
@@ -351,7 +370,7 @@ class ApplicationPresenter:
                     "ransac_method": "deformable",
                 }
             else:
-                kwargs = {
+                defaults = {
                     "num_samples": 10,
                     "ransac_filter": True,
                     "ransac_threshold": 0.05,
@@ -359,9 +378,12 @@ class ApplicationPresenter:
                     "ransac_method": "deformable",
                 }
 
+            # Merge defaults with provided kwargs (provided values override defaults)
+            detection_kwargs = {**defaults, **kwargs}
+
             # Detect points
             src_points, dst_points = self.point_auto_identifier.detect_points(
-                src_img, dst_img, method=method, **kwargs
+                src_img, dst_img, method=method, **detection_kwargs
             )
             if src_points.size == 0 or dst_points.size == 0:
                 logger.warning("No points detected by auto identifier")

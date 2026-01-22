@@ -227,23 +227,23 @@
     "destination_resolution": "0.52083333",
     "source_paths": {
       "data": [
-        "/Users/jameslamb/coding/research/EBSD-Correction/test_data/3D/EBSD.dream3d"
+        "./demo_data/3D/EBSD.dream3d"
       ]
     },
     "destination_paths": {
       "BSE": [
-        "/Users/jameslamb/coding/research/EBSD-Correction/test_data/3D/BSE_001.tif",
-        "/Users/jameslamb/coding/research/EBSD-Correction/test_data/3D/BSE_002.tif",
-        "/Users/jameslamb/coding/research/EBSD-Correction/test_data/3D/BSE_003.tif",
-        "/Users/jameslamb/coding/research/EBSD-Correction/test_data/3D/BSE_004.tif",
-        "/Users/jameslamb/coding/research/EBSD-Correction/test_data/3D/BSE_005.tif"
+        "./demo_data/3D/BSE_001.tif",
+        "./demo_data/3D/BSE_002.tif",
+        "./demo_data/3D/BSE_003.tif",
+        "./demo_data/3D/BSE_004.tif",
+        "./demo_data/3D/BSE_005.tif"
       ],
       "SE": [
-        "/Users/jameslamb/coding/research/EBSD-Correction/test_data/3D/SE_001.tif",
-        "/Users/jameslamb/coding/research/EBSD-Correction/test_data/3D/SE_002.tif",
-        "/Users/jameslamb/coding/research/EBSD-Correction/test_data/3D/SE_003.tif",
-        "/Users/jameslamb/coding/research/EBSD-Correction/test_data/3D/SE_004.tif",
-        "/Users/jameslamb/coding/research/EBSD-Correction/test_data/3D/SE_005.tif"
+        "./demo_data/3D/SE_001.tif",
+        "./demo_data/3D/SE_002.tif",
+        "./demo_data/3D/SE_003.tif",
+        "./demo_data/3D/SE_004.tif",
+        "./demo_data/3D/SE_005.tif"
       ]
     }
   }

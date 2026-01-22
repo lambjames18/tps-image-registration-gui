@@ -142,11 +142,11 @@
     "source_resolution": 1.5,
     "destination_resolution": 0.52083333,
     "source_paths": {
-      "data": ["/Users/jameslamb/coding/research/EBSD-Correction/test_data/2D/EBSD.ang"]
+      "data": ["./demo_data/2D/EBSD.ang"]
     },
     "destination_paths": {
-      "BSE": ["/Users/jameslamb/coding/research/EBSD-Correction/test_data/2D/BSE.tif"],
-      "SE": ["/Users/jameslamb/coding/research/EBSD-Correction/test_data/2D/SE.tif"]
+      "BSE": ["./demo_data/2D/BSE.tif"],
+      "SE": ["./demo_data/2D/SE.tif"]
     }
   }
 }

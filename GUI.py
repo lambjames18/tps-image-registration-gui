@@ -8,7 +8,7 @@ import os
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
 import numpy as np
 import tkinter as tk
 from PIL import Image, ImageTk
@@ -133,6 +133,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             highlightcolor=self.hl,
             highlightbackground=self.hl,
         )
+        s.configure("TEntry", fieldbackground=self.bg, foreground=self.fg)
 
     def _setup_window(self):
         """Setup main window properties."""
@@ -1043,10 +1044,15 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _on_auto_detect_points(self, method: str):
         """Handle automatic point detection."""
+        # Show parameter dialog
+        params = self._get_auto_detect_params_dialog(method)
+        if params is None:
+            return  # User cancelled
+
         self.show_progress(True)
         self.set_status(f"Detecting points using {method}...")
         original_n_points = len(self.presenter.get_points()[0])
-        success = self.presenter.auto_detect_points(method)
+        success = self.presenter.auto_detect_points(method, **params)
         new_n_points = len(self.presenter.get_points()[0])
         self.show_progress(False)
         if success:
@@ -1444,7 +1450,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.transient(self)
         dialog.grab_set()
         # Set background to match main window
-        dialog.config(bg=self.cget("bg"))
+        dialog.config(bg=self.bg)
 
         selected = tk.StringVar(value="TPS")
 
@@ -1454,7 +1460,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
                 text=transform_type.value.replace("_", " ").title(),
                 variable=selected,
                 value=transform_type.value,
-                bg=self.cget("bg"),
+                bg=self.bg,
+                fg=self.fg,
+                selectcolor=self.bg,
             ).pack(anchor="w", padx=20, pady=5)
 
         result = [None]
@@ -1484,7 +1492,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.transient(self)
         dialog.grab_set()
         # Set background to match main window
-        dialog.config(bg=self.cget("bg"))
+        dialog.config(bg=self.bg)
 
         selected = tk.StringVar(value="none")
 
@@ -1494,7 +1502,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
                 text=crop_mode.value.replace("_", " ").title(),
                 variable=selected,
                 value=crop_mode.value,
-                bg=self.cget("bg"),
+                bg=self.bg,
+                fg=self.fg,
+                selectcolor=self.bg,
             ).pack(anchor="w", padx=20, pady=5)
 
         result = [None]
@@ -1522,6 +1532,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.title("Select Export Format")
         dialog.geometry("250x260")
         dialog.transient(self)
+        dialog.grab_set()
+        # Set background to match main window
+        dialog.config(bg=self.bg)
 
         selected_format = tk.StringVar(value=DataFormat.IMAGE.value)
 
@@ -1560,6 +1573,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.geometry("350x150")
         dialog.transient(self)
         dialog.grab_set()
+        dialog.config(bg=self.bg)
 
         # Main frame
         main_frame = ttk.Frame(dialog, padding="10")
@@ -1613,6 +1627,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.geometry("300x180")
         dialog.transient(self)
         dialog.grab_set()
+        dialog.config(bg=self.bg)
 
         # Main frame
         main_frame = ttk.Frame(dialog, padding="10")
@@ -1637,7 +1652,13 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         options = [("Current Image", "image"), ("Entire Stack", "stack")]
         for text, value in options:
             tk.Radiobutton(
-                main_frame, text=text, variable=selected_option, value=value
+                main_frame,
+                text=text,
+                variable=selected_option,
+                value=value,
+                bg=self.bg,
+                fg=self.fg,
+                selectcolor=self.bg,
             ).pack(anchor="w", padx=20, pady=5)
 
         # Button frame
@@ -1647,6 +1668,160 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(
             side="left", padx=5
         )
+
+        dialog.wait_window()
+        return result[0]
+
+    def _get_auto_detect_params_dialog(self, method: str) -> Optional[Dict]:
+        """Show dialog to configure auto point detection parameters.
+
+        Args:
+            method: Detection method ('sift' or 'matchanything')
+
+        Returns:
+            Dictionary of parameters or None if cancelled
+        """
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Auto Detection Parameters ({method.upper()})")
+        dialog.transient(self)
+        dialog.grab_set()
+        dialog.config(bg=self.bg)
+
+        # Main frame
+        main_frame = ttk.Frame(dialog, padding="10")
+        main_frame.pack(fill="both", expand=True)
+
+        # Parameter variables
+        params = {}
+        entries = {}
+
+        if method == "sift":
+            dialog.geometry("450x340")
+            # SIFT-specific parameters
+            param_defs = [
+                ("max_ratio", "Max Ratio:", 0.75, "Lowe's ratio test threshold (0-1)"),
+                (
+                    "min_matches",
+                    "Min Matches:",
+                    4,
+                    "Minimum number of matches required",
+                ),
+                ("sigma", "Sigma:", 0.5, "Gaussian blur sigma"),
+                ("num_samples", "Num Samples:", 10, "Number of RANSAC samples"),
+                (
+                    "ransac_threshold",
+                    "RANSAC Threshold:",
+                    5.5,
+                    "RANSAC inlier threshold",
+                ),
+                (
+                    "ransac_max_trials",
+                    "RANSAC Max Trials:",
+                    1000,
+                    "Maximum RANSAC iterations",
+                ),
+            ]
+        else:  # matchanything
+            dialog.geometry("430x270")
+            param_defs = [
+                ("num_samples", "Num Samples:", 10, "Number of point samples"),
+                (
+                    "ransac_threshold",
+                    "RANSAC Threshold:",
+                    0.05,
+                    "RANSAC inlier threshold (relative)",
+                ),
+                (
+                    "ransac_max_trials",
+                    "RANSAC Max Trials:",
+                    100,
+                    "Maximum RANSAC iterations",
+                ),
+            ]
+
+        # RANSAC method (common to both)
+        ransac_method_var = tk.StringVar(value="deformable")
+        ransac_filter_var = tk.BooleanVar(value=True)
+
+        # Create parameter entries
+        for i, (key, label, default, tooltip) in enumerate(param_defs):
+            row_frame = ttk.Frame(main_frame)
+            row_frame.pack(fill="x", pady=3)
+
+            lbl = ttk.Label(row_frame, text=label, width=18, anchor="e")
+            lbl.pack(side="left", padx=(0, 5))
+
+            var = tk.StringVar(value=str(default))
+            entry = ttk.Entry(row_frame, textvariable=var, width=12)
+            entry.pack(side="left")
+            entries[key] = var
+
+            # Tooltip label
+            tip_lbl = ttk.Label(row_frame, text=tooltip, foreground="gray")
+            tip_lbl.pack(side="left", padx=(10, 0))
+
+        # RANSAC filter checkbox (for matchanything only)
+        if method == "matchanything":
+            filter_frame = ttk.Frame(main_frame)
+            filter_frame.pack(fill="x", pady=3)
+            ttk.Label(filter_frame, text="", width=18).pack(side="left")
+            ttk.Checkbutton(
+                filter_frame, text="Enable RANSAC filtering", variable=ransac_filter_var
+            ).pack(side="left")
+
+        # RANSAC method selection
+        method_frame = ttk.Frame(main_frame)
+        method_frame.pack(fill="x", pady=(10, 3))
+        ttk.Label(method_frame, text="RANSAC Method:", width=18, anchor="e").pack(
+            side="left", padx=(0, 5)
+        )
+        ransac_combo = ttk.Combobox(
+            method_frame,
+            textvariable=ransac_method_var,
+            values=["deformable", "affine", "similarity"],
+            state="readonly",
+            width=15,
+        )
+        ransac_combo.pack(side="left")
+
+        result = [None]
+
+        def on_ok():
+            try:
+                params = {}
+                for key, var in entries.items():
+                    val = var.get()
+                    # Try to convert to appropriate type
+                    if "." in val:
+                        params[key] = float(val)
+                    else:
+                        params[key] = int(val)
+
+                params["ransac_method"] = ransac_method_var.get()
+                if method == "matchanything":
+                    params["ransac_filter"] = ransac_filter_var.get()
+
+                result[0] = params
+                dialog.destroy()
+            except ValueError as e:
+                messagebox.showerror(
+                    "Invalid Input", f"Please enter valid numbers: {e}"
+                )
+
+        def on_cancel():
+            dialog.destroy()
+
+        # Button frame
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(pady=(15, 5))
+        ttk.Button(button_frame, text="Detect", command=on_ok).pack(side="left", padx=5)
+        ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(
+            side="left", padx=5
+        )
+
+        # Bind Enter key
+        dialog.bind("<Return>", lambda e: on_ok())
+        dialog.bind("<Escape>", lambda e: on_cancel())
 
         dialog.wait_window()
         return result[0]
