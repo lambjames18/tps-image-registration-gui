@@ -5,12 +5,16 @@ This script demonstrates how to use the ROMA matcher for automatic
 control point detection between image pairs.
 """
 
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
+
 import numpy as np
 from skimage import io, transform
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from roma_matcher import RomaMatcher, detect_points_roma
+from roma_matcher import detect_points_roma
 
 
 def example_visualization():
@@ -22,30 +26,29 @@ def example_visualization():
     print("=" * 60)
 
     # Create synthetic test images with known transformation
-    h, w = 512, 512
-    source_image = io.imread(
+    dest_image = io.imread(
         "D:/Research/Datasets-Projects/MatchAnything_Datasets/CoNi-AM67_SEM-EBSD_SameSliceSerialSectioning/EBSD_000_IQ.tiff"
     )
-    source_image = np.dstack([source_image] * 3)
-    dest_image = io.imread(
+    source_image = io.imread(
         "D:/Research/Datasets-Projects/MatchAnything_Datasets/CoNi-AM67_SEM-EBSD_SameSliceSerialSectioning/BSE_000.tif"
     )
     dest_image = np.dstack([dest_image] * 3)
+    source_image = np.dstack([source_image] * 3)
 
     print(f"Source image shape: {source_image.shape}")
     print(f"Destination image shape: {dest_image.shape}")
 
-    matcher = RomaMatcher(
-        checkpoint_path="matchanything_roma.ckpt",
-    )
-
-    src_points, dst_points, confidences = matcher.detect_points(
+    src_points, dst_points = detect_points_roma(
         source_image,
         dest_image,
-        ransac_filter=True,
+        checkpoint_path=None,
     )
 
     print(f"Detected {len(src_points)} matches")
+
+    if len(src_points) > 100:
+        src_points = src_points[::100]
+        dst_points = dst_points[::100]
 
     # Visualize matches
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))

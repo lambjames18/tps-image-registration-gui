@@ -1,0 +1,15 @@
+name: matchanything_trial
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  #- pytorch-cuda=11.7
+  #- pytorch=1.12.0
+  #- torchvision=0.13.1
+  #- cudatoolkit=11.7  # Explicit CUDA version
+  - pip
+  - pip:
+      - -r requirements.txt
