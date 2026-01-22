@@ -31,12 +31,12 @@ from PIL import Image
 import pytorch_lightning as pl
 from Matchanything.src.lightning.lightning_loftr import PL_LoFTR
 from Matchanything.src.config.default import get_cfg_defaults
-from ransac import ransac_filter
+from ransac import ransac_filter as ransac
 
 logger = logging.getLogger(__name__)
 
 
-def _prepare_image(im: np.ndarray, normalize: bool = False):
+def _prepare_image(im: np.ndarray) -> torch.Tensor:
     """
     Prepares an image for input to the matcher.
     """
@@ -118,7 +118,7 @@ def get_config(checkpoint_path: str = None) -> Tuple[object, dict]:
 
 
 # Convenience function for one-time use
-def detect_points_roma(
+def detect_points_matchanything(
     source_image: np.ndarray,
     destination_image: np.ndarray,
     checkpoint_path: str = None,
@@ -142,9 +142,55 @@ def detect_points_roma(
         Tuple of (source_points, destination_points, confidences)
     """
     # Initialize matcher
+    matcher = create_matcher(checkpoint_path=checkpoint_path)
+
+    # Apply model to detect points
+    mkpts1, mkpts0, mconf = apply_matcher(
+        matcher,
+        source_image,
+        destination_image,
+        ransac_filter=kwargs.get("ransac_filter", True),
+        ransac_threshold=kwargs.get("ransac_threshold", 0.05),
+        ransac_method=kwargs.get("ransac_method", "deformable"),
+    )
+
+    return mkpts1, mkpts0, mconf
+
+
+def create_matcher(checkpoint_path: str = None) -> object:
+    """
+    Create and return a ROMA matcher instance.
+
+    Args:
+        checkpoint_path: Path to pretrained checkpoint
+    Returns:
+        Initialized ROMA matcher instance
+    """
     config, cfg = get_config(checkpoint_path=checkpoint_path)
     matcher = PL_LoFTR(config, pretrained_ckpt=cfg["ckpt_path"], test_mode=True).matcher
     matcher.eval().cuda()
+    return matcher
+
+
+def apply_matcher(
+    matcher,
+    source_image: np.ndarray,
+    destination_image: np.ndarray,
+    ransac_filter: bool = True,
+    ransac_threshold: float = 0.05,
+    ransac_method: str = "deformable",
+    ransac_max_trials: int = 100,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Apply the given matcher model to detect points between source and destination images.
+
+    Args:
+        matcher: Pre-initialized matcher model
+        source_image: Source image as numpy array
+        destination_image: Destination image as numpy array
+    Returns:
+        Tuple of (source_points, destination_points, confidences)
+    """
 
     # Prepare images
     source_tensor = _prepare_image(source_image).unsqueeze(0).cuda()
@@ -156,7 +202,7 @@ def detect_points_roma(
 
     # Perform matching
     with torch.no_grad():
-        with torch.autocast(enabled=config.LOFTR.FP16, device_type="cuda"):
+        with torch.autocast(enabled=True, device_type="cuda"):
             matcher(data)
 
         mkpts0 = data["mkpts0_f"].cpu().numpy()
@@ -165,16 +211,17 @@ def detect_points_roma(
     print(f"Total matches found: {len(mkpts0)}")
 
     # Apply RANSAC filtering if enabled
-    if cfg["ransac_filter"] and len(mkpts0) >= 4:
-        inliers = ransac_filter(
+    if ransac_filter and len(mkpts0) >= 4:
+        inliers = ransac(
             mkpts0,
             mkpts1,
-            threshold=cfg["rigid_ransac_thr"],
-            method=cfg["ransac_method"],
+            threshold=ransac_threshold,
+            method=ransac_method,
+            max_trials=ransac_max_trials,
         )
         mkpts0 = mkpts0[inliers]
         mkpts1 = mkpts1[inliers]
         mconf = mconf[inliers]
         print(f"Matches after RANSAC filtering: {len(mkpts0)}")
 
-    return mkpts1, mkpts0
+    return mkpts1, mkpts0, mconf

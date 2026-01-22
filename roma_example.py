@@ -14,7 +14,7 @@ from skimage import io, transform
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-from roma_matcher import detect_points_roma
+from roma_matcher import detect_points_matchanything
 
 
 def example_visualization():
@@ -38,7 +38,7 @@ def example_visualization():
     print(f"Source image shape: {source_image.shape}")
     print(f"Destination image shape: {dest_image.shape}")
 
-    src_points, dst_points = detect_points_roma(
+    src_points, dst_points, confidences = detect_points_matchanything(
         source_image,
         dest_image,
         checkpoint_path=None,
@@ -49,7 +49,7 @@ def example_visualization():
     if len(src_points) > 100:
         src_points = src_points[::100]
         dst_points = dst_points[::100]
-
+        confidences = confidences[::100]
     # Visualize matches
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
@@ -60,7 +60,7 @@ def example_visualization():
             src_points[i, 0],
             src_points[i, 1],
             c="red",
-            s=500,
+            s=500 * confidences[i],
             alpha=0.5,
             marker=r"${}$".format(i),
         )
@@ -75,7 +75,7 @@ def example_visualization():
             dst_points[i, 0],
             dst_points[i, 1],
             c="blue",
-            s=200,
+            s=200 * confidences[i],
             alpha=0.5,
             marker=r"${}$".format(i),
         )

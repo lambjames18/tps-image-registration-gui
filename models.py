@@ -21,6 +21,10 @@ from torchvision.transforms import InterpolationMode
 from torchvision.transforms.functional import resize as RESIZE
 from kornia.enhance import equalize_clahe
 
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning)
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -438,11 +442,11 @@ class PointAutoIdentifier:
     ENGINES = {
         "sift": "detect_points_sift",
         "matchanything": "detect_points_matchanything",
-        "roma": "detect_points_matchanything",  # Alias for convenience
     }
+    checkpoint_path = None
+    _matchanything_matcher = None  # Cache ROMA matcher for reuse
 
     def __init__(self):
-        self._roma_matcher = None  # Cache ROMA matcher for reuse
         logger.info("PointAutoIdentifier initialized")
 
     @classmethod
@@ -467,9 +471,14 @@ class PointAutoIdentifier:
         loader_method = getattr(cls, cls.ENGINES[method], None)
         if loader_method is None:
             raise ValueError(f"Unsupported point identification method: {method}")
-        logger.info(
-            f"Identifying points using method '{method}' with parameters {kwargs}"
-        )
+        logger.info(f"Identifying points using method '{method}'")
+        if method == "matchanything":
+            return loader_method(
+                source_image,
+                destination_image,
+                checkpoint_path=kwargs.get("checkpoint_path", cls.checkpoint_path),
+                **kwargs,
+            )
         return loader_method(source_image, destination_image, **kwargs)
 
     @staticmethod
@@ -489,14 +498,17 @@ class PointAutoIdentifier:
             Tuple of numpy arrays: (source_points, destination_points)
         """
         from skimage.feature import SIFT, match_descriptors
-        from skimage.measure import ransac
         from skimage.transform import AffineTransform
         from skimage.filters import gaussian
+        from ransac import ransac_filter as ransac
 
         # Get parameters
         max_ratio = kwargs.get("max_ratio", 0.75)
         min_matches = kwargs.get("min_matches", 4)
         sigma = kwargs.get("sigma", 0.5)
+        ransac_threshold = kwargs.get("ransac_threshold", 5.5)
+        ransac_max_trials = kwargs.get("ransac_max_trials", 1000)
+        ransac_method = kwargs.get("ransac_method", "deformable")
 
         # Ensure images are grayscale and uint8
         if source_image.ndim > 2:
@@ -565,12 +577,12 @@ class PointAutoIdentifier:
 
             # Use RANSAC to filter outliers
             try:
-                model, inliers = ransac(
-                    (src_points, dst_points),
-                    AffineTransform,
-                    min_samples=3,
-                    residual_threshold=2,
-                    max_trials=1000,
+                inliers = ransac(
+                    src_points,
+                    dst_points,
+                    threshold=ransac_threshold,
+                    max_trials=ransac_max_trials,
+                    method=ransac_method,
                 )
 
                 src_points = src_points[inliers]
@@ -587,6 +599,23 @@ class PointAutoIdentifier:
                 )
                 return np.array([]), np.array([])
 
+            # Only return num_samples best matches based on fractional distance
+            num_samples = kwargs.get("num_samples", 10)
+            if len(src_points) > num_samples:
+                # Compute distances between matched points
+                src_pts_norm = src_points / np.array(
+                    [source_image.shape[1], source_image.shape[0]]
+                )
+                dst_pts_norm = dst_points / np.array(
+                    [destination_image.shape[1], destination_image.shape[0]]
+                )
+                distances = np.linalg.norm(src_pts_norm - dst_pts_norm, axis=1)
+                sorted_indices = np.argsort(distances)
+                top_indices = sorted_indices[:num_samples]
+                src_points = src_points[top_indices]
+                dst_points = dst_points[top_indices]
+                logger.info(f"Selected top {num_samples} matches based on distance")
+
             return src_points.astype(int), dst_points.astype(int)
 
         except Exception as e:
@@ -595,8 +624,11 @@ class PointAutoIdentifier:
 
     @staticmethod
     def detect_points_matchanything(
-        source_image: np.ndarray, destination_image: np.ndarray, **kwargs
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        source_image: np.ndarray,
+        destination_image: np.ndarray,
+        checkpoint_path: str = None,
+        **kwargs,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Detect matching points between images using ROMA (MatchAnything).
 
         Args:
@@ -617,38 +649,23 @@ class PointAutoIdentifier:
             Tuple of (source_points, destination_points) as numpy arrays (Nx2)
         """
         try:
-            # Import here to avoid loading ROMA unless needed
-            from roma_matcher import RomaMatcher
+            from roma_matcher import create_matcher, apply_matcher
 
-            # Extract parameters with defaults
-            confidence_threshold = kwargs.get("confidence_threshold", 0.1)
-            ransac_filter = kwargs.get("ransac_filter", True)
-            ransac_threshold = kwargs.get("ransac_threshold", 5.5)
-            num_samples = kwargs.get("num_samples", 5000)
-            checkpoint_path = kwargs.get("checkpoint_path", "matchanything_roma.ckpt")
-            # device = kwargs.get("device", "cpu")
-            device = kwargs.get("device", "cuda")
-            resize_by_stretch = kwargs.get("resize_by_stretch", True)
-            coarse_resolution = kwargs.get("coarse_resolution", (560, 560))
-            upsample_resolution = kwargs.get("upsample_resolution", (864, 864))
+            # If matcher is not cached, create it
+            if PointAutoIdentifier._matchanything_matcher is None:
+                PointAutoIdentifier._matchanything_matcher = create_matcher(
+                    checkpoint_path=checkpoint_path
+                )
+            matcher = PointAutoIdentifier._matchanything_matcher
 
-            # Create matcher
-            matcher = RomaMatcher(
-                checkpoint_path=checkpoint_path,
-                confidence_threshold=confidence_threshold,
-                num_samples=num_samples,
-                device=device,
-                resize_by_stretch=resize_by_stretch,
-                coarse_resolution=coarse_resolution,
-                upsample_resolution=upsample_resolution,
-            )
-
-            # Detect points
-            src_points, dst_points, _ = matcher.detect_points(
+            src_points, dst_points, confidences = apply_matcher(
+                matcher,
                 source_image,
                 destination_image,
-                ransac_filter=ransac_filter,
-                ransac_threshold=ransac_threshold,
+                ransac_filter=kwargs.get("ransac_filter", True),
+                ransac_threshold=kwargs.get("ransac_threshold", 0.05),
+                ransac_method=kwargs.get("ransac_method", "deformable"),
+                ransac_max_trials=kwargs.get("ransac_max_trials", 100),
             )
 
             logger.info(f"ROMA detected {len(src_points)} matches")
@@ -658,6 +675,18 @@ class PointAutoIdentifier:
                     "Insufficient matches found (< 4). Cannot estimate transformation."
                 )
                 return np.array([]), np.array([])
+
+            # Take the top N matches based on confidence
+            num_samples = kwargs.get("num_samples", 10)
+            if len(confidences) > num_samples:
+                sorted_indices = np.argsort(-confidences)
+                top_indices = sorted_indices[:num_samples]
+                src_points = src_points[top_indices]
+                dst_points = dst_points[top_indices]
+                confidences = confidences[top_indices]
+                logger.info(
+                    f"Selected top {num_samples} matches (min confidence: {confidences[-1]:.4f})"
+                )
 
             return src_points.astype(int), dst_points.astype(int)
 
@@ -673,11 +702,19 @@ class PointAutoIdentifier:
             )
             return np.array([]), np.array([])
         except Exception as e:
-            logger.error(f"ROMA point detection failed: {e}")
+            logger.error(f"Matchanything point detection failed: {e}")
             import traceback
 
             logger.error(traceback.format_exc())
             return np.array([]), np.array([])
+
+    @classmethod
+    def set_checkpoint_path(cls, path: str) -> None:
+        """Set the checkpoint path for MatchAnything."""
+        cls.checkpoint_path = path
+        # Clear cached matcher to reload with new checkpoint
+        cls._matchanything_matcher = None
+        logger.info(f"Set MatchAnything checkpoint path to: {path}")
 
 
 class ImageLoader:

@@ -315,6 +315,21 @@ class ApplicationPresenter:
 
     # ========== Point Management ==========
 
+    def set_checkpoint_path(self, path: Path) -> None:
+        """Set the checkpoint path for MatchAnything point detection."""
+        try:
+            PointAutoIdentifier.set_checkpoint_path(str(path))
+            logger.info(f"Checkpoint path set to: {path}")
+        except Exception as e:
+            logger.error(f"Failed to set checkpoint path: {e}")
+            self._notify_view_error(
+                f"Failed to set checkpoint path: {str(e)}, ({parse_error()})"
+            )
+
+    def get_checkpoint_path(self) -> Optional[str]:
+        """Get the current checkpoint path for MatchAnything."""
+        return PointAutoIdentifier.checkpoint_path
+
     def auto_detect_points(self, method: str) -> None:
         """Automatically detect control points using specified method."""
         try:
@@ -324,13 +339,56 @@ class ApplicationPresenter:
             # Get current images
             src_img, dst_img = self.get_current_images(normalize=True)
 
+            # Create kwargs for point detection
+            if method == "sift":
+                kwargs = {
+                    "max_ratio": 0.75,
+                    "min_matches": 4,
+                    "sigma": 0.5,
+                    "num_samples": 10,
+                    "ransac_threshold": 5.5,
+                    "ransac_max_trials": 1000,
+                    "ransac_method": "deformable",
+                }
+            else:
+                kwargs = {
+                    "num_samples": 10,
+                    "ransac_filter": True,
+                    "ransac_threshold": 0.05,
+                    "ransac_max_trials": 100,
+                    "ransac_method": "deformable",
+                }
+
             # Detect points
             src_points, dst_points = self.point_auto_identifier.detect_points(
-                src_img, dst_img, method=method
+                src_img, dst_img, method=method, **kwargs
             )
             if src_points.size == 0 or dst_points.size == 0:
                 logger.warning("No points detected by auto identifier")
                 return False
+
+            # Remove points that are already present
+            existing_src_points, existing_dst_points = (
+                self.point_manager.get_point_pairs(self.current_slice)
+            )
+            if existing_src_points.size > 0 and existing_dst_points.size > 0:
+                src_dists = np.linalg.norm(
+                    src_points[:, None, :] - existing_src_points[None, :, :], axis=2
+                )
+                dst_dists = np.linalg.norm(
+                    dst_points[:, None, :] - existing_dst_points[None, :, :], axis=2
+                )
+                src_mask = (src_dists != 0).any(axis=1)
+                dst_mask = (dst_dists != 0).any(axis=1)
+                combined_mask = src_mask & dst_mask
+                src_points = src_points[combined_mask]
+                dst_points = dst_points[combined_mask]
+                print(f"Adding {len(src_points)} new points from auto detection")
+                if src_points.size == 0 or dst_points.size == 0:
+                    logger.warning(
+                        "No new points to add after removing existing points"
+                    )
+                    return False
 
             # Scale points if resolutions are matched
             if self.match_resolutions:
@@ -931,6 +989,7 @@ class ApplicationPresenter:
                 "destination_resolution": str(self.destination_image.resolution),
                 "source_paths": source_paths,
                 "destination_paths": destination_paths,
+                "checkpoint_path": self.get_checkpoint_path(),
             }
 
             # Use the first path for backward compatibility
@@ -1007,6 +1066,11 @@ class ApplicationPresenter:
             self.clahe_active_source = settings.get("clahe_source", False)
             self.clahe_active_dest = settings.get("clahe_dest", False)
             self.match_resolutions = settings.get("match_resolutions", False)
+
+            # Load checkpoint path if present
+            checkpoint_path = settings.get("checkpoint_path")
+            if checkpoint_path:
+                self.set_checkpoint_path(Path(checkpoint_path))
 
             self._notify_view_project_loaded()
             return True

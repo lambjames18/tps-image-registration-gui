@@ -259,14 +259,16 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.menubar.add_cascade(label="Auto point detection", menu=tools_menu)
         tools_menu.add_command(
             label="MatchAnything",
-            command=lambda: self._on_auto_detect_points("roma"),
-            # command=lambda: self._on_auto_detect_points("matchanything"),
-            # state="disabled",
+            command=lambda: self._on_auto_detect_points("matchanything"),
         )
         tools_menu.add_command(
             label="SIFT",
             command=lambda: self._on_auto_detect_points("sift"),
-            # state="disabled",
+        )
+        tools_menu.add_separator()
+        tools_menu.add_command(
+            label="Set MatchAnything checkpoint...",
+            command=self._on_set_checkpoint_path,
         )
 
     def _create_main_layout(self):
@@ -1054,6 +1056,24 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         else:
             self.set_status(f"Point detection using {method} failed")
 
+    def _on_set_checkpoint_path(self):
+        """Handle setting the MatchAnything checkpoint path."""
+        current_path = self.presenter.get_checkpoint_path()
+        initial_dir = Path(current_path).parent if current_path else None
+
+        file_path = filedialog.askopenfilename(
+            title="Select MatchAnything Checkpoint",
+            initialdir=initial_dir,
+            filetypes=[
+                ("Checkpoint Files", "*.pth *.pt *.ckpt"),
+                ("All Files", "*.*"),
+            ],
+        )
+
+        if file_path:
+            self.presenter.set_checkpoint_path(Path(file_path))
+            self.set_status(f"Checkpoint path set to: {Path(file_path).name}")
+
     def _on_view_matched_points(self):
         """Handle viewing matched points visualization."""
         if not self.presenter.source_image or not self.presenter.destination_image:
@@ -1423,6 +1443,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.geometry("300x130")
         dialog.transient(self)
         dialog.grab_set()
+        # Set background to match main window
+        dialog.config(bg=self.cget("bg"))
 
         selected = tk.StringVar(value="TPS")
 
@@ -1432,6 +1454,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
                 text=transform_type.value.replace("_", " ").title(),
                 variable=selected,
                 value=transform_type.value,
+                bg=self.cget("bg"),
             ).pack(anchor="w", padx=20, pady=5)
 
         result = [None]
@@ -1460,6 +1483,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.geometry("290x130")
         dialog.transient(self)
         dialog.grab_set()
+        # Set background to match main window
+        dialog.config(bg=self.cget("bg"))
 
         selected = tk.StringVar(value="none")
 
@@ -1469,6 +1494,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
                 text=crop_mode.value.replace("_", " ").title(),
                 variable=selected,
                 value=crop_mode.value,
+                bg=self.cget("bg"),
             ).pack(anchor="w", padx=20, pady=5)
 
         result = [None]
