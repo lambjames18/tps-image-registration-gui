@@ -4,7 +4,6 @@ matplotlib
 h5py
 imageio
 scipy
-scikit-learn
 scikit-image
 # Libraries for MatchAnything functionality
 torch[matchanything]
@@ -12,5 +11,5 @@ torchvision[matchanything]
 kornia[matchanything]
 einops[matchanything]
 loguru[matchanything]
-pillow[matchanything]
-xformers[matchanything]
+joblib[matchanything]
+yacs[matchanything]

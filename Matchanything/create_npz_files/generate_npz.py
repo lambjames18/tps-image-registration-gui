@@ -8,7 +8,6 @@ import pickle
 import numpy as np
 from skimage import io
 import tkinter as tk
-from tkinter import ttk
 
 
 save_folder_base = "/Users/jameslamb/Documents/research/data/match_anything_datasets/"
