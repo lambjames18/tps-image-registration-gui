@@ -10,8 +10,6 @@ from skimage import io
 import tkinter as tk
 from tkinter import ttk
 
-import Inputs
-
 
 save_folder_base = "/Users/jameslamb/Documents/research/data/match_anything_datasets/"
 
@@ -61,6 +59,97 @@ elif pick == 5:
     ]
     parent_name = "CoNi-AM90_OM-SEM_Multiscale"
     same_scene = True
+
+
+def read_ang_header(path):
+    """Reads the header of an ang file"""
+    col_names = None
+    header = ""
+    header_lines = 0
+    with open(path, "r") as f:
+        for line in f:
+            header += line
+            if "NCOLS_ODD" in line:
+                ncols = int(line.split(": ")[1].strip())
+            elif "NROWS" in line:
+                nrows = int(line.split(": ")[1].strip())
+            elif "COLUMN_HEADERS" in line:
+                col_names = line.replace("\n", "").split(": ")[1].strip().split(", ")
+            elif "XSTEP" in line:
+                res = float(line.split(": ")[1].strip())
+            elif "HEADER: End" in line:
+                break
+            header_lines += 1
+    if col_names is None:
+        col_names = ["phi1", "PHI", "phi2", "x", "y", "IQ", "CI", "Phase index"]
+    return ncols, nrows, col_names, res, header, header_lines
+
+
+def read_ang(path):
+    """Reads an ang file into a numpy array"""
+    ncols, nrows, col_names, res, header, header_lines = read_ang_header(path)
+    raw_data = np.genfromtxt(path, skip_header=header_lines, dtype=float)
+    n_entries = raw_data.shape[-1]
+    if raw_data.shape[0] == ncols * nrows:
+        data = raw_data.reshape((nrows, ncols, n_entries))
+    elif raw_data.shape != ncols * nrows:
+        raise ValueError(
+            f"The number of data points ({raw_data.size}) does not match the expected grid ({nrows} rows, {ncols} cols, {ncols * nrows} total points). "
+        )
+
+    out = {col_names[i]: data[:, :, i] for i in range(n_entries)}
+    out["EulerAngles"] = np.array([out["phi1"], out["PHI"], out["phi2"]]).T.astype(
+        float
+    )
+    for key in out.keys():
+        if key not in ["EulerAngles"]:
+            out[key] = np.fliplr(np.rot90(out[key], k=3))
+        if len(out[key].shape) == 2:
+            out[key] = out[key].T
+        else:
+            out[key] = out[key].transpose((1, 0, 2))
+        out[key] = out[key].reshape((1,) + out[key].shape)
+
+    # Get the grain file if it exists
+    dirname = os.path.dirname(path)
+    basenames = [
+        os.path.splitext(os.path.basename(path))[0] + "_Grain.txt",
+        os.path.splitext(os.path.basename(path))[0] + "_grain.txt",
+    ]
+    grain_file_exists = [
+        os.path.exists(os.path.join(dirname, basename)) for basename in basenames
+    ]
+    if any(grain_file_exists):
+        grain_path = os.path.join(dirname, basenames[grain_file_exists.index(True)])
+        grain_data = read_grainFile(grain_path)
+        out["GrainIDs"] = grain_data.reshape((1,) + (nrows, ncols))
+    return out, res
+
+
+def read_grainFile(path):
+    with open(path, "r") as f:
+        for line in f:
+            if line[0] != "#":
+                break
+            if "Grain ID" in line:
+                column = int(
+                    line.split(": ")[0].replace("#", "").replace("Column", "").strip()
+                )
+                break
+    grain_data = np.genfromtxt(
+        path, comments="#", delimiter="\n", skip_header=1, dtype=str
+    )
+    f = (
+        lambda x: x.replace("      ", " ")
+        .replace("     ", " ")
+        .replace("    ", " ")
+        .replace("   ", " ")
+        .replace("  ", " ")
+        .split(" ")
+    )
+    grainIDs = np.array([f(x)[column - 1] for x in grain_data]).reshape(-1).astype(int)
+    grainIDs[grainIDs <= 0] = 0
+    return grainIDs
 
 
 class Image:
@@ -457,7 +546,7 @@ if same_scene:
         for i in range(len(source_image_paths)):
             if source_image_paths[i].suffix == ".ang":
                 path = source_image_paths.pop(i)
-                ang_data = Inputs.read_ang(path)[0]
+                ang_data = read_ang(path)[0]
                 ang_data["IQ"][0][np.isnan(ang_data["IQ"][0])] = 0.0
                 ang_data["CI"][0][np.isnan(ang_data["CI"][0])] = 0.0
                 iq_path = path.with_stem(path.stem + "_IQ").with_suffix(".tiff")
@@ -483,7 +572,7 @@ if same_scene:
         for i in range(len(destination_image_paths)):
             if destination_image_paths[i].suffix == ".ang":
                 path = destination_image_paths.pop(i)
-                ang_data = Inputs.read_ang(path)[0]
+                ang_data = read_ang(path)[0]
                 iq_path = path.with_stem(path.stem + "_IQ").with_suffix(".tiff")
                 ci_path = path.with_stem(path.stem + "_CI").with_suffix(".tiff")
                 prias_path = path.with_stem(path.stem + "_PRIAS").with_suffix(".tiff")
@@ -590,7 +679,7 @@ else:
         for i in range(len(source_image_paths)):
             if source_image_paths[i].suffix == ".ang":
                 path = source_image_paths.pop(i)
-                ang_data = Inputs.read_ang(path)[0]
+                ang_data = read_ang(path)[0]
                 ang_data["IQ"][0][np.isnan(ang_data["IQ"][0])] = 0.0
                 ang_data["CI"][0][np.isnan(ang_data["CI"][0])] = 0.0
                 iq_path = path.with_stem(path.stem + "_IQ").with_suffix(".tiff")
@@ -616,7 +705,7 @@ else:
         for i in range(len(destination_image_paths)):
             if destination_image_paths[i].suffix == ".ang":
                 path = destination_image_paths.pop(i)
-                ang_data = Inputs.read_ang(path)[0]
+                ang_data = read_ang(path)[0]
                 iq_path = path.with_stem(path.stem + "_IQ").with_suffix(".tiff")
                 ci_path = path.with_stem(path.stem + "_CI").with_suffix(".tiff")
                 prias_path = path.with_stem(path.stem + "_PRIAS").with_suffix(".tiff")
