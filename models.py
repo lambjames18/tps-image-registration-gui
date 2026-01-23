@@ -1411,6 +1411,8 @@ class TransformManager:
         order: int = 0,
     ) -> np.ndarray:
         """Apply transformation to a stack of images with interpolation between slices."""
+        from tps import ThinPlateSplineTransform
+
         if output_shape is None:
             output_shape = image_stack.shape[1:3]
 
@@ -1424,10 +1426,35 @@ class TransformManager:
             src_pts = src_points[mask, 1:]
             dst_pts = dst_points[mask, 1:]
 
-            tform = self.estimate_transform(
+            tform: ThinPlateSplineTransform = self.estimate_transform(
                 src_pts, dst_pts, transform_type, output_shape
             )
             transforms[slice_idx] = tform
+
+        # Interpolate transforms for slices without points
+        for i in range(image_stack.shape[0]):
+            if i not in transforms:
+                # Find the two nearest slices with transforms
+                lower_slices = [s for s in slice_indices if s < i]
+                upper_slices = [s for s in slice_indices if s > i]
+                if lower_slices and upper_slices:
+                    lower_idx = max(lower_slices)
+                    upper_idx = min(upper_slices)
+                    alpha = (i - lower_idx) / (upper_idx - lower_idx)
+
+                    # Simple linear interpolation of parameters (not ideal for TPS)
+                    lower_params = transforms[lower_idx].params
+                    upper_params = transforms[upper_idx].params
+                    interp_params = (1 - alpha) * lower_params + alpha * upper_params
+
+                    tform = ThinPlateSplineTransform()
+                    tform.params = interp_params
+                    tform._estimated = True
+                    transforms[i] = tform
+                elif lower_slices:
+                    transforms[i] = transforms[max(lower_slices)]
+                elif upper_slices:
+                    transforms[i] = transforms[min(upper_slices)]
 
         # Apply transforms with interpolation
         output_stack = np.zeros(
