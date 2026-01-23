@@ -96,6 +96,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self._create_controls()
         self._bind_events()
 
+        self.iconbitmap("EBSD-Correction.ico")
+
         logger.info("View initialized")
 
     def _style_call(self, style="dark"):
@@ -1488,7 +1490,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         """Show dialog to select crop mode."""
         dialog = tk.Toplevel(self)
         dialog.title("Select Crop Mode")
-        dialog.geometry("290x130")
+        dialog.geometry("290x350")
         dialog.transient(self)
         dialog.grab_set()
         # Set background to match main window
@@ -1508,6 +1510,15 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             ).pack(anchor="w", padx=20, pady=5)
 
         result = [None]
+
+        # Add a description to the dialog
+        description = (
+            "Choose how to crop the corrected image:\n"
+            "- Source: Crop onto a grid equal to the source image (i.e., source is 100x100 pixels so output is 100x100 pixels). Typically involves cropping the output.\n"
+            "- Destination: Crop onto a grid equal to the destination image (i.e., source is 100x100 pixels, destination is 200x200 pixels so output is 200x200 pixels). Typically involves upsampling.\n"
+        )
+        desc_label = ttk.Label(dialog, text=description, wraplength=260, justify="left")
+        desc_label.pack(padx=10, pady=(0, 10))
 
         def on_ok():
             result[0] = CropMode(selected.get())
@@ -1545,6 +1556,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
                 text=data_format.value.replace("_", " ").title(),
                 variable=selected_format,
                 value=data_format.value,
+                bg=self.bg,
+                fg=self.fg,
+                selectcolor=self.bg,
             ).pack(anchor="w", padx=20, pady=5)
 
         result = [None]
@@ -2078,6 +2092,9 @@ class Interactive3DViewer:
         title : str
             Window title
         """
+        print("Initializing Interactive 3D Viewer...")
+        stack0, stack1 = self._prepare_stacks(stack0, stack1)
+
         self.master = master
         self.stack0 = stack0
         self.stack1 = stack1
@@ -2085,9 +2102,12 @@ class Interactive3DViewer:
         self.active = 0  # 0 for row slider, 1 for col slider
 
         # Initialize dimensions
-        self.max_r = self.stack0.shape[1]
-        self.max_c = self.stack0.shape[2]
-        self.max_s = self.stack0.shape[0] - 1
+        self.max_x = self.stack0.shape[2]
+        self.max_y = self.stack0.shape[1]
+        self.max_z = self.stack0.shape[0] - 1
+        self.max_r = self.max_y
+        self.max_c = self.max_x
+        self.max_s = self.max_z
         if self.max_s == 0:
             self.max_s = 1
 
@@ -2102,14 +2122,18 @@ class Interactive3DViewer:
 
     def get_limits(self, axis, shape):
         """Update dimension limits based on selected plane"""
-        self.max_r = shape[0]
-        self.max_c = shape[1]
         if axis == 0:
-            self.max_s = self.stack0.shape[0] - 1
+            self.max_r = self.max_y
+            self.max_c = self.max_x
+            self.max_s = self.max_z
         elif axis == 1:
-            self.max_s = self.stack0.shape[1] - 1
+            self.max_r = self.max_z
+            self.max_c = self.max_x
+            self.max_s = self.max_y
         elif axis == 2:
-            self.max_s = self.stack0.shape[2] - 1
+            self.max_r = self.max_z
+            self.max_c = self.max_y
+            self.max_s = self.max_x
 
     def _create_slice(self, slice_num, axis, split_num, split_axis):
         """Create a composite slice from the two stacks"""
@@ -2143,20 +2167,25 @@ class Interactive3DViewer:
 
         return image
 
-    def _normalize_image(self, img):
-        """Normalize image to 0-255 range and ensure it's in the right format"""
-        if img.dtype == np.float64 or img.dtype == np.float32:
-            img = (img * 255).astype(np.uint8)
-        elif img.dtype != np.uint8:
-            img = img.astype(np.uint8)
+    def _prepare_stacks(self, stack0, stack1):
+        # Make sure both have the same number of channels
+        if stack0.shape[-1] < stack1.shape[-1]:
+            stack0 = np.repeat(stack0, stack1.shape[-1], axis=-1)
+        elif stack1.shape[-1] < stack0.shape[-1]:
+            stack1 = np.repeat(stack1, stack0.shape[-1], axis=-1)
 
-        # Convert grayscale to RGB if needed
-        if len(img.shape) == 2:
-            img = np.stack([img, img, img], axis=2)
-        elif len(img.shape) == 3 and img.shape[2] == 1:
-            img = np.concatenate([img, img, img], axis=2)
+        # If 1 channel, convert to 3-channel RGB
+        if stack0.shape[-1] == 1:
+            stack0 = np.concatenate([stack0, stack0, stack0], axis=-1)
+            stack1 = np.concatenate([stack1, stack1, stack1], axis=-1)
 
-        return img
+        # Normalize both stacks to uint8
+        if stack0.dtype != np.uint8:
+            stack0 = (stack0.astype(np.float32) / np.max(stack0) * 255).astype(np.uint8)
+        if stack1.dtype != np.uint8:
+            stack1 = (stack1.astype(np.float32) / np.max(stack1) * 255).astype(np.uint8)
+
+        return stack0, stack1
 
     def _get_window_size(self):
         """Calculate appropriate window size based on image dimensions and screen size"""
@@ -2344,9 +2373,6 @@ class Interactive3DViewer:
             self.current_row_split if self.active == 0 else self.current_col_split,
             self.active,
         )
-
-        # Normalize image
-        image = self._normalize_image(image)
 
         # Convert to PIL Image
         pil_image = Image.fromarray(image)

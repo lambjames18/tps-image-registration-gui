@@ -40,8 +40,8 @@ class ViewMode(Enum):
 class CropMode(Enum):
     """Enumeration of crop modes."""
 
-    SOURCE = "src"
-    DESTINATION = "dst"
+    SOURCE = "source"
+    DESTINATION = "destination"
 
 
 class ApplicationPresenter:

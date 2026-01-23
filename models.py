@@ -1497,7 +1497,7 @@ class ImageProcessor:
             tensor = torch.round(
                 255 * (tensor - tensor.min()) / (tensor.max() - tensor.min())
             )
-            result = np.squeeze(tensor.detach().numpy().astype(np.uint8))
+            result = tensor.detach().numpy().astype(np.uint8)
             if result.ndim == 3:
                 result = np.transpose(result, (1, 2, 0))
             elif result.ndim == 4:
