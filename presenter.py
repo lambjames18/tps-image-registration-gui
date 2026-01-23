@@ -388,29 +388,40 @@ class ApplicationPresenter:
             if src_points.size == 0 or dst_points.size == 0:
                 logger.warning("No points detected by auto identifier")
                 return False
+            logger.info(f"Detected {len(src_points)} points")
+
+            # Make sure there are no duplicate points
+            src_points, idx = np.unique(src_points, axis=0, return_index=True)
+            dst_points = dst_points[idx]
+            dst_points, idx = np.unique(dst_points, axis=0, return_index=True)
+            src_points = src_points[idx]
+            logger.info(
+                f"{detection_kwargs['num_samples'] - len(src_points)} duplicate points removed ({len(src_points)} unique points remain)"
+            )
 
             # Remove points that are already present
             existing_src_points, existing_dst_points = (
                 self.point_manager.get_point_pairs(self.current_slice)
             )
             if existing_src_points.size > 0 and existing_dst_points.size > 0:
-                src_dists = np.linalg.norm(
-                    src_points[:, None, :] - existing_src_points[None, :, :], axis=2
+                existing_src_delta = set(map(tuple, existing_src_points))
+                existing_dst_delta = set(map(tuple, existing_dst_points))
+                points = np.array(
+                    [
+                        (sp, dp)
+                        for sp, dp in zip(src_points, dst_points)
+                        if tuple(sp) not in existing_src_delta
+                        and tuple(dp) not in existing_dst_delta
+                    ]
                 )
-                dst_dists = np.linalg.norm(
-                    dst_points[:, None, :] - existing_dst_points[None, :, :], axis=2
-                )
-                src_mask = (src_dists != 0).any(axis=1)
-                dst_mask = (dst_dists != 0).any(axis=1)
-                combined_mask = src_mask & dst_mask
-                src_points = src_points[combined_mask]
-                dst_points = dst_points[combined_mask]
-                print(f"Adding {len(src_points)} new points from auto detection")
-                if src_points.size == 0 or dst_points.size == 0:
+                if points.size == 0:
                     logger.warning(
                         "No new points to add after removing existing points"
                     )
                     return False
+                logger.info(f"{len(src_points) - len(points)} existing points removed")
+                src_points = np.array([p[0] for p in points])
+                dst_points = np.array([p[1] for p in points])
 
             # Scale points if resolutions are matched
             if self.match_resolutions:
@@ -420,6 +431,9 @@ class ApplicationPresenter:
                     [(p[0] * res_scale, p[1] * res_scale) for p in dst_points]
                 )
 
+            logger.info(
+                f"Auto-detected {len(src_points)} new control points using {method}"
+            )
             # Add detected points to point manager
             for sp, dp in zip(src_points, dst_points):
                 self.point_manager.source_points.add_point(

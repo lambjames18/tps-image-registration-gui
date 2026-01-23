@@ -676,14 +676,70 @@ class PointAutoIdentifier:
                 )
                 return np.array([]), np.array([])
 
+            selection_method = "grid"  # grid, random, naive
+
             # Take the top N matches based on confidence
             num_samples = kwargs.get("num_samples", 10)
             if len(confidences) > num_samples:
+                # First define a minimum confidence threshold
                 sorted_indices = np.argsort(-confidences)
-                top_indices = sorted_indices[:num_samples]
-                src_points = src_points[top_indices]
-                dst_points = dst_points[top_indices]
-                confidences = confidences[top_indices]
+                min_confidence = confidences[sorted_indices[num_samples - 1]]
+                # Filter matches by confidence
+                mask = confidences >= min_confidence
+                src_points = src_points[mask]
+                dst_points = dst_points[mask]
+                confidences = confidences[mask]
+
+                if len(src_points) > num_samples:
+
+                    # Select a subset equal to the num_samples that tries to maximize the spread
+                    if selection_method == "grid":
+                        grid_size = int(np.sqrt(num_samples))
+                        row_bins = np.linspace(0, source_image.shape[0], grid_size + 1)
+                        col_bins = np.linspace(0, source_image.shape[1], grid_size + 1)
+                        selected_indices = []
+                        deficit = 0
+                        for i in range(grid_size):
+                            for j in range(grid_size):
+                                cell_mask = (
+                                    (src_points[:, 1] >= row_bins[i])
+                                    & (src_points[:, 1] < row_bins[i + 1])
+                                    & (src_points[:, 0] >= col_bins[j])
+                                    & (src_points[:, 0] < col_bins[j + 1])
+                                )
+                                cell_indices = np.where(cell_mask)[0]
+                                if len(cell_indices) > 0:
+                                    chosen_idx = np.random.choice(
+                                        cell_indices, size=1 + deficit
+                                    )
+                                    selected_indices.extend(chosen_idx)
+                                    deficit = 0
+                                else:
+                                    deficit += 1
+                                if len(selected_indices) >= num_samples:
+                                    break
+                            if len(selected_indices) >= num_samples:
+                                break
+                        selected_indices = np.array(selected_indices)[:num_samples]
+                        src_points = src_points[selected_indices]
+                        dst_points = dst_points[selected_indices]
+                        confidences = confidences[selected_indices]
+
+                    # Select random matches
+                    elif selection_method == "random":
+                        selected_indices = np.random.choice(
+                            len(src_points), size=num_samples, replace=False
+                        )
+                        src_points = src_points[selected_indices]
+                        dst_points = dst_points[selected_indices]
+                        confidences = confidences[selected_indices]
+
+                    # Just take the top N matches
+                    elif selection_method == "naive":
+                        src_points = src_points[:num_samples]
+                        dst_points = dst_points[:num_samples]
+                        confidences = confidences[:num_samples]
+
                 logger.info(
                     f"Selected top {num_samples} matches (min confidence: {confidences[-1]:.4f})"
                 )
