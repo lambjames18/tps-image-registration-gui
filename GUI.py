@@ -683,6 +683,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _on_open_project(self):
         """Handle opening a project."""
+        self.show_progress(True)
         self._on_new_project()
         file_path = filedialog.askopenfilename(
             title="Open Project",
@@ -690,14 +691,13 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         )
 
         if file_path:
-            self.show_progress(True)
             self.set_status("Loading project...")
 
             if self.presenter.load_project(Path(file_path)):
                 self.set_status("Project loaded successfully")
                 self.title(f"Distortion Correction v2.0 - {Path(file_path).name}")
 
-            self.show_progress(False)
+        self.show_progress(False)
 
     def _on_save_project(self):
         """Handle saving current project."""
@@ -746,13 +746,16 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         """Handle exporting corrected image."""
         # This would need implementation for full export functionality
         self.set_status("Exporting corrected image")
+        self.show_progress(True)
 
         transform_type = self._get_transform_type_dialog()
         if transform_type is None:
+            self.show_progress(False)
             return
 
         data_format = self._get_export_format_dialog()
         if data_format is None:
+            self.show_progress(False)
             return
 
         if data_format == DataFormat.DREAM3D:
@@ -760,6 +763,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         else:
             crop_mode = self._get_crop_mode_dialog()
             if crop_mode is None:
+                self.show_progress(False)
                 return
 
         if data_format == DataFormat.IMAGE:
@@ -792,9 +796,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         )
 
         if not path:
+            self.show_progress(False)
             return
 
-        self.show_progress(True)
         self.set_status(
             f"Exporting {transform_type.value} corrected image as {data_format.value} cropped to {crop_mode.value}..."
         )
@@ -1014,20 +1018,23 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _on_set_resolution(self):
         """Set image resolution."""
+        self.show_progress(True)
         src_res, dst_res = self._get_image_resolutions_dialog()
         if src_res is None or dst_res is None:
+            self.show_progress(False)
             return
         elif src_res and dst_res:
             # Update image resolutions
             self.presenter.set_image_resolutions(src_res, dst_res)
+        self.show_progress(False)
 
     def _on_apply(self, is_3d=False):
         """Apply transformation to current slice."""
+        self.show_progress(True)
         transform_type = self._get_transform_type_dialog()
         if transform_type:
             crop_mode = self._get_crop_mode_dialog()
             if crop_mode is not None:
-                self.show_progress(True)
                 self.set_status(f"Generating {transform_type.value} preview...")
                 if is_3d:
                     if self.presenter.source_image.shape[0] == 1:
@@ -1041,31 +1048,33 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
                     self.presenter.apply_transform(
                         transform_type, crop_mode, preview=True
                     )
-                    self.show_progress(False)
                 self.set_status("Transformation preview completed")
+        self.show_progress(False)
 
     def _on_auto_detect_points(self, method: str):
         """Handle automatic point detection."""
         # Show parameter dialog
+        self.show_progress(True)
         params = self._get_auto_detect_params_dialog(method)
         if params is None:
+            self.show_progress(False)
             return  # User cancelled
 
-        self.show_progress(True)
         self.set_status(f"Detecting points using {method}...")
         original_n_points = len(self.presenter.get_points()[0])
         success = self.presenter.auto_detect_points(method, **params)
         new_n_points = len(self.presenter.get_points()[0])
-        self.show_progress(False)
         if success:
             self.set_status(
                 f"Points detected using {method}: {new_n_points - original_n_points} new points"
             )
         else:
             self.set_status(f"Point detection using {method} failed")
+        self.show_progress(False)
 
     def _on_set_checkpoint_path(self):
         """Handle setting the MatchAnything checkpoint path."""
+        self.show_progress(True)
         current_path = self.presenter.get_checkpoint_path()
         initial_dir = Path(current_path).parent if current_path else None
 
@@ -1081,6 +1090,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         if file_path:
             self.presenter.set_checkpoint_path(Path(file_path))
             self.set_status(f"Checkpoint path set to: {Path(file_path).name}")
+        self.show_progress(False)
 
     def _on_view_matched_points(self):
         """Handle viewing matched points visualization."""
@@ -1099,8 +1109,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.show_progress(True)
         self.set_status("Generating matched points visualization...")
         self.presenter.show_matched_points()
-        self.show_progress(False)
         self.set_status("Matched points visualization opened")
+        self.show_progress(False)
 
     # ========== ViewInterface Implementation ==========
 
@@ -1290,6 +1300,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         # Draw points if enabled
         if self.show_points:
             self._draw_points()
+
+        # Ensure progress bar is stopped
+        self.show_progress(False)
 
     def _display_image(self, canvas, image):
         """Display image on canvas."""
