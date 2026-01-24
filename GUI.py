@@ -19,9 +19,6 @@ from presenter import ApplicationPresenter, TransformType, CropMode, DataFormat
 logger = logging.getLogger(__name__)
 
 
-## TODO: Mutual information metric and feature density metric
-
-
 class ViewInterface(ABC):
     """Abstract base class for view implementations."""
 
