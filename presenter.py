@@ -771,7 +771,7 @@ class ApplicationPresenter:
                 dummy = self.transform_manager.apply_transform(
                     dummy, tform, output_shape
                 )
-                slc = self._get_cropping_slice(dummy, dst_img, src_img.shape, crop_mode)
+                slc = self._get_cropping_slice(dummy, src_img.shape, crop_mode)
                 warped = warped[slc[1:]]
                 dst_img = dst_img[slc[1:]]
 
@@ -790,17 +790,20 @@ class ApplicationPresenter:
 
     def apply_transform_3d(
         self,
-        transform_type: TransformType,
+        transforms: Dict[int, Any] = None,
+        transform_type: TransformType = TransformType.TPS,
         crop_mode: CropMode = CropMode.SOURCE,
         normalize: bool = True,
         preview: bool = False,
-        return_images: bool = False,
+        return_data: bool = False,
     ) -> Optional[np.ndarray]:
         """Apply transformation to entire 3D stack."""
         try:
+            # Get image stacks
+            src_stack, dst_stack = self.get_current_image_stacks(normalize=normalize)
+
             # Get point pairs
             src_points, dst_points = self.point_manager.get_point_pairs()
-
             if src_points.size == 0 or dst_points.size == 0:
                 self._notify_view_error("No control points defined for transformation")
                 return None
@@ -813,32 +816,44 @@ class ApplicationPresenter:
                     [(p[0], p[1] * res_scale, p[2] * res_scale) for p in dst_points]
                 )
 
-            # Get image stacks
-            src_stack, dst_stack = self.get_current_image_stacks(normalize=normalize)
+            # Get output shape
+            output_shape = dst_stack.shape[1:3]
+
+            if transforms is None:
+                transforms = self.transform_manager.estimate_transform_stack(
+                    src_points,
+                    dst_points,
+                    transform_type,
+                    output_shape,
+                    n_slices=src_stack.shape[0],
+                )
 
             # Apply transformation
-            output_shape = dst_stack.shape[1:3]
             warped_stack = self.transform_manager.apply_transform_stack(
-                src_stack, src_points, dst_points, transform_type, output_shape
+                image_stack=src_stack,
+                transform_type=transform_type,
+                output_shape=output_shape,
+                transforms=transforms,
             )
 
             # Apply cropping if needed
             if crop_mode == CropMode.SOURCE:
                 dummy_stack = np.ones_like(src_stack)
                 dummy_stack = self.transform_manager.apply_transform_stack(
-                    dummy_stack, src_points, dst_points, transform_type, output_shape
+                    image_stack=dummy_stack,
+                    transform_type=transform_type,
+                    output_shape=output_shape,
+                    transforms=transforms,
                 )
-                slc = self._get_cropping_slice(
-                    warped_stack, dummy_stack, src_stack.shape, crop_mode
-                )
+                slc = self._get_cropping_slice(dummy_stack, src_stack.shape, crop_mode)
                 warped_stack = warped_stack[slc]
                 dst_stack = dst_stack[slc]
 
             if preview:
                 self._notify_view_show_preview(warped_stack, dst_stack)
 
-            if return_images:
-                return warped_stack, src_stack, dst_stack
+            if return_data:
+                return warped_stack, src_stack, dst_stack, transforms
 
         except Exception as e:
             logger.error(f"Failed to apply 3D transform: {e}")
@@ -937,16 +952,19 @@ class ApplicationPresenter:
                 # loop over all modalities and export
                 warped_stacks = {}
 
+                transforms = None
                 dst_modes = self.destination_image.modalities
                 for mode in self.source_image.modalities:
+                    logger.info(f"Processing modality: {mode}")
                     self.set_source_mode(mode)
                     self._notify_view_update_display()
-                    warped_stack, src_stack, dst_stack = self.apply_transform_3d(
-                        transform_type,
-                        crop_mode,
+                    warped_stack, src_stack, dst_stack, _t = self.apply_transform_3d(
+                        transform_type=transform_type,
+                        crop_mode=crop_mode,
                         normalize=False,
                         preview=False,
-                        return_images=True,
+                        return_data=True,
+                        transforms=transforms,
                     )
                     if warped_stack is None:
                         return False
@@ -957,6 +975,8 @@ class ApplicationPresenter:
                         if len(dst_modes) > 0:
                             self.set_destination_mode(dst_modes[0])
                             self._notify_view_update_display()
+                    if transforms is None:
+                        transforms = _t  # use the same transforms for all modalities
 
                 self.image_writer.save(warped_stacks, path, self.source_image.path[0])
 
@@ -1224,7 +1244,6 @@ class ApplicationPresenter:
     def _get_cropping_slice(
         self,
         warped: np.ndarray,
-        reference: np.ndarray,
         original_shape: Tuple,
         crop_mode: CropMode,
     ) -> Tuple[np.ndarray, np.ndarray]:

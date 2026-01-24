@@ -1337,6 +1337,18 @@ class TransformManager:
         self._last_params = None
         logger.info("TransformManager initialized")
 
+    def _check_valid_points(
+        self, src_points: np.ndarray, dst_points: np.ndarray
+    ) -> None:
+        """Check if the provided points are valid for transformation estimation."""
+        if src_points.size == 0 or dst_points.size == 0:
+            raise ValueError("Source and destination points cannot be empty")
+
+        if src_points.shape[0] != dst_points.shape[0]:
+            raise ValueError(
+                f"Point count mismatch: {src_points.shape[0]} vs {dst_points.shape[0]}"
+            )
+
     def estimate_transform(
         self,
         src_points: np.ndarray,
@@ -1345,13 +1357,7 @@ class TransformManager:
         output_shape: Tuple[int, int],
     ) -> Any:
         """Estimate transformation parameters from point correspondences."""
-        if src_points.size == 0 or dst_points.size == 0:
-            raise ValueError("Cannot estimate transform with empty point sets")
-
-        if src_points.shape[0] != dst_points.shape[0]:
-            raise ValueError(
-                f"Point count mismatch: {src_points.shape[0]} vs {dst_points.shape[0]}"
-            )
+        self._check_valid_points(src_points, dst_points)
 
         try:
             # Import TPS here to avoid circular dependency
@@ -1372,6 +1378,63 @@ class TransformManager:
         except Exception as e:
             logger.error(f"Failed to estimate transform: {e}")
             raise
+
+    def estimate_transform_stack(
+        self,
+        src_points: np.ndarray,
+        dst_points: np.ndarray,
+        transform_type: TransformType,
+        output_shape: Tuple[int, int],
+        n_slices: int = None,
+    ) -> Dict[int, Any]:
+        """Estimate transformations for a stack of images based on point correspondences."""
+        self._check_valid_points(src_points, dst_points)
+
+        from tps import ThinPlateSplineTransform
+
+        # Get unique slices with points
+        slice_indices = np.unique(src_points[:, 0]).astype(int)
+
+        # Estimate transforms for each slice with points
+        transforms = {}
+        for slice_idx in slice_indices:
+            mask = src_points[:, 0] == slice_idx
+            src_pts = src_points[mask, 1:]
+            dst_pts = dst_points[mask, 1:]
+
+            tform: ThinPlateSplineTransform = self.estimate_transform(
+                src_pts, dst_pts, transform_type, output_shape
+            )
+            transforms[slice_idx] = tform
+
+        # Interpolate transforms for slices without points
+        for i in range(n_slices):
+            if i not in transforms:
+                # Find the two nearest slices with transforms
+                lower_slices = [s for s in slice_indices if s < i]
+                upper_slices = [s for s in slice_indices if s > i]
+                if lower_slices and upper_slices:
+                    lower_idx = max(lower_slices)
+                    upper_idx = min(upper_slices)
+                    alpha = (i - lower_idx) / (upper_idx - lower_idx)
+
+                    # Simple linear interpolation of parameters (not ideal for TPS)
+                    lower_params = transforms[lower_idx].params
+                    upper_params = transforms[upper_idx].params
+                    interp_params = (1 - alpha) * lower_params + alpha * upper_params
+
+                    tform = ThinPlateSplineTransform()
+                    tform.params = interp_params
+                    tform._estimated = True
+                    tform.affine_only = transform_type == TransformType.TPS_AFFINE
+                    transforms[i] = tform
+                elif lower_slices:
+                    transforms[i] = transforms[max(lower_slices)]
+                elif upper_slices:
+                    transforms[i] = transforms[min(upper_slices)]
+
+        logger.info(f"Estimated transforms for {len(transforms)} slices in the stack")
+        return transforms
 
     def apply_transform(
         self,
@@ -1404,11 +1467,13 @@ class TransformManager:
     def apply_transform_stack(
         self,
         image_stack: np.ndarray,
-        src_points: np.ndarray,
-        dst_points: np.ndarray,
-        transform_type: TransformType,
+        src_points: np.ndarray = None,
+        dst_points: np.ndarray = None,
+        transform_type: TransformType = TransformType.TPS,
         output_shape: Optional[Tuple[int, int]] = None,
         order: int = 0,
+        transforms: Optional[Dict[int, Any]] = None,
+        return_transforms: bool = False,
     ) -> np.ndarray:
         """Apply transformation to a stack of images with interpolation between slices."""
         from tps import ThinPlateSplineTransform
@@ -1416,45 +1481,18 @@ class TransformManager:
         if output_shape is None:
             output_shape = image_stack.shape[1:3]
 
-        # Get unique slices with points
-        slice_indices = np.unique(src_points[:, 0]).astype(int)
-
-        # Estimate transforms for each slice with points
-        transforms = {}
-        for slice_idx in slice_indices:
-            mask = src_points[:, 0] == slice_idx
-            src_pts = src_points[mask, 1:]
-            dst_pts = dst_points[mask, 1:]
-
-            tform: ThinPlateSplineTransform = self.estimate_transform(
-                src_pts, dst_pts, transform_type, output_shape
+        if transforms is not None:
+            # Use provided transforms
+            logger.info("Using provided transforms for stack warping")
+        else:
+            # Estimate transforms for slices with points
+            transforms = self.estimate_transform_stack(
+                src_points,
+                dst_points,
+                transform_type,
+                output_shape,
+                n_slices=image_stack.shape[0],
             )
-            transforms[slice_idx] = tform
-
-        # Interpolate transforms for slices without points
-        for i in range(image_stack.shape[0]):
-            if i not in transforms:
-                # Find the two nearest slices with transforms
-                lower_slices = [s for s in slice_indices if s < i]
-                upper_slices = [s for s in slice_indices if s > i]
-                if lower_slices and upper_slices:
-                    lower_idx = max(lower_slices)
-                    upper_idx = min(upper_slices)
-                    alpha = (i - lower_idx) / (upper_idx - lower_idx)
-
-                    # Simple linear interpolation of parameters (not ideal for TPS)
-                    lower_params = transforms[lower_idx].params
-                    upper_params = transforms[upper_idx].params
-                    interp_params = (1 - alpha) * lower_params + alpha * upper_params
-
-                    tform = ThinPlateSplineTransform()
-                    tform.params = interp_params
-                    tform._estimated = True
-                    transforms[i] = tform
-                elif lower_slices:
-                    transforms[i] = transforms[max(lower_slices)]
-                elif upper_slices:
-                    transforms[i] = transforms[min(upper_slices)]
 
         # Apply transforms with interpolation
         output_stack = np.zeros(
@@ -1475,6 +1513,8 @@ class TransformManager:
             )
 
         logger.info(f"Applied transform to stack of {image_stack.shape[0]} images")
+        if return_transforms:
+            return output_stack, transforms
         return output_stack
 
     def export_transform(self, tform: Any, path: Path, format: str = "npy") -> None:
