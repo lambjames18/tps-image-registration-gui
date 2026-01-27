@@ -527,7 +527,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
         self.presenter.new_project()
         self.set_status("New project created")
-        self.title("Distortion Correction v2.0")
+        self.title("Multimodal Data Alignment Tool - New Project")
 
     def _on_open_source(self):
         """Handle opening source image."""
@@ -692,7 +692,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
             if self.presenter.load_project(Path(file_path)):
                 self.set_status("Project loaded successfully")
-                self.title(f"Distortion Correction v2.0 - {Path(file_path).name}")
+                self.title(f"Multimodal Data Alignment Tool - {Path(file_path).name}")
 
         self.show_progress(False)
 
@@ -715,7 +715,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         if file_path:
             if self.presenter.save_project(Path(file_path)):
                 self.set_status(f"Project saved as {Path(file_path).name}")
-                self.title(f"Distortion Correction v2.0 - {Path(file_path).name}")
+                self.title(f"Multimodal Data Alignment Tool - {Path(file_path).name}")
 
     def _on_export_transform(self):
         """Handle exporting transformation."""
