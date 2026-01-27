@@ -732,34 +732,39 @@ class ApplicationPresenter:
         crop_mode: CropMode = CropMode.DESTINATION,
         normalize: bool = True,
         preview: bool = False,
-        return_images: bool = False,
+        return_data: bool = False,
+        tform: Any = None,
     ) -> Optional[np.ndarray]:
         """Apply transformation to current image/slice."""
         try:
-            src_points, dst_points = self.point_manager.get_point_pairs(
-                self.current_slice
-            )
-
-            if src_points.size == 0 or dst_points.size == 0:
-                self._notify_view_error("No control points defined for transformation")
-                return None
-
-            # Correct points for matched resolutions
-            if self.match_resolutions:
-                src_res, dst_res = self.get_resolutions()
-                res_scale = dst_res / src_res
-                dst_points = np.array(
-                    [(p[0] * res_scale, p[1] * res_scale) for p in dst_points]
-                )
-
             # Get current source image
             src_img, dst_img = self.get_current_images(normalize=normalize)
-
-            # Estimate transform
             output_shape = dst_img.shape[:2]
-            tform = self.transform_manager.estimate_transform(
-                src_points, dst_points, transform_type, output_shape
-            )
+
+            # Use provided transform or estimate a new one
+            if tform is None:
+                src_points, dst_points = self.point_manager.get_point_pairs(
+                    self.current_slice
+                )
+
+                if src_points.size == 0 or dst_points.size == 0:
+                    self._notify_view_error(
+                        "No control points defined for transformation"
+                    )
+                    return None
+
+                # Correct points for matched resolutions
+                if self.match_resolutions:
+                    src_res, dst_res = self.get_resolutions()
+                    res_scale = dst_res / src_res
+                    dst_points = np.array(
+                        [(p[0] * res_scale, p[1] * res_scale) for p in dst_points]
+                    )
+
+                # Estimate transform
+                tform = self.transform_manager.estimate_transform(
+                    src_points, dst_points, transform_type, output_shape
+                )
 
             # Apply transform
             warped = self.transform_manager.apply_transform(
@@ -778,7 +783,7 @@ class ApplicationPresenter:
             if preview:
                 self._notify_view_show_preview(warped, dst_img)
 
-            if return_images:
+            if return_data:
                 return warped, src_img, dst_img
 
         except Exception as e:
@@ -873,12 +878,12 @@ class ApplicationPresenter:
         try:
             # For image export, we just warp the current mode and save the result
             if data_format in {DataFormat.IMAGE, DataFormat.RAW_IMAGE}:
-                warped_img, src_img, dst_img = self.apply_transform(
+                warped_img, src_img, dst_img, tform = self.apply_transform(
                     transform_type,
                     crop_mode,
                     normalize=False,
                     preview=False,
-                    return_images=True,
+                    return_data=True,
                 )
                 if warped_img is None:
                     return False
@@ -906,22 +911,26 @@ class ApplicationPresenter:
                 warped_imgs = {}
                 src_imgs = {}
 
+                tform = None
                 for mode in self.source_image.modalities:
                     if mode.lower() == "eulerangles":
                         continue
                     self.set_source_mode(mode)
                     self._notify_view_update_display()
-                    warped, src, dst_img = self.apply_transform(
+                    warped, src, dst_img, _t = self.apply_transform(
                         transform_type,
                         crop_mode,
                         normalize=False,
                         preview=False,
-                        return_images=True,
+                        return_data=True,
+                        tform=tform,
                     )
                     if warped is None:
                         return False
                     warped_imgs[mode] = warped
                     src_imgs[mode] = src
+                    if tform is None:
+                        tform = _t  # use the same transform for all modalities
 
                 # Save dst image
                 self.image_writer.save(dst_img, path.with_name(path.stem + "_dst.tif"))

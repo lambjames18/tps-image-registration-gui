@@ -136,7 +136,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _setup_window(self):
         """Setup main window properties."""
-        self.title("Distortion Correction v2.0")
+        self.title("Multimodal Data Alignment Tool")
         self.geometry("1400x900")
 
         # Configure grid weights
