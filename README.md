@@ -1,4 +1,4 @@
-# Distortion correction for EBSD/BSE images
+# Multimodal image registration GUI
 
 A python GUI application designed to facilitate multimodal image alignment via a thin-plate spline transformation using identified control points.
 
