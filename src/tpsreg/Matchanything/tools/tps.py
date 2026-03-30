@@ -1,8 +1,5 @@
 import numpy as np
 from scipy.spatial.distance import cdist
-from scipy.sparse import csr_matrix
-from scipy.sparse.linalg import spsolve
-from skimage import transform as tf
 from tqdm import tqdm
 
 
@@ -62,6 +59,25 @@ class ThinPlateSplineTransform:
 
         return chunk_size
 
+    def _check_valid_points(self, src, dst):
+        """Check if source and destination points are valid."""
+        if src.shape != dst.shape:
+            raise ValueError("Source and destination points must have the same shape.")
+        elif src.shape == (2,):
+            raise ValueError(
+                "Incorrect shape for control points; expected (N, 2), received (2,)."
+            )
+        elif src.shape[1] != 2:
+            raise ValueError("Control points must be 2D coordinates.")
+        elif src.shape[0] < 3:
+            raise ValueError("At least 3 control points are required.")
+        # Check for duplicate points
+        src_duplicates = np.unique(src, axis=0).shape[0] != src.shape[0]
+        dst_duplicates = np.unique(dst, axis=0).shape[0] != dst.shape[0]
+        if src_duplicates or dst_duplicates:
+            raise ValueError("Control points contain duplicates.")
+        return True
+
     def estimate(self, src, dst, size, available_memory_gb=2.0):
         """Estimate optimal spline mappings between source and destination points.
 
@@ -83,6 +99,9 @@ class ThinPlateSplineTransform:
         -----
         The number N of source and destination points must match.
         """
+        # validate input points
+        self._check_valid_points(src, dst)
+
         # convert input pixels in arrays. cps are control points
         xs = np.asarray(dst[:, 0])
         ys = np.array(dst[:, 1])
@@ -185,23 +204,43 @@ class ThinPlateSplineTransform:
         return True
 
     def _TPS_makeL(self, cp):
-        """Function to make the L matrix for thin plate spline calculation."""
-        # cp: [K x 2] control points
-        # L: [(K+3) x (K+3)]
+        """Function to make the L matrix for thin plate spline calculation.
+
+        Parameters
+        ----------
+        cp : (K, 2) array_like
+            Control points.
+        Returns
+        -------
+        L : (K+3, K+3) ndarray
+            The L matrix for thin plate spline calculation.
+        """
         K = cp.shape[0]
         L = np.zeros((K + 3, K + 3))
-        # make P in L
+
+        # Make P in L
         L[:K, K] = 1
         L[:K, K + 1 : K + 3] = cp
-        # make P.T in L
+
+        # Make P.T in L
         L[K, :K] = 1
         L[K + 1 :, :K] = cp.T
-        R = cdist(cp, cp, "euclidean")
+
+        # Compute U matrix
+        R = cdist(cp, cp, "euclidean").astype(self.dtype)
         Rsq = R * R
-        Rsq[R == 0] = (
-            1  # avoid log(0) undefined, will correct itself as log(1) = 0, so U(0) = 0
-        )
-        U = Rsq * np.log(Rsq)
+        Rsq[R == 0] = 1
+        U0 = Rsq * np.log(Rsq)
+
+        mask = R > 0
+        U1 = np.zeros_like(R, dtype=self.dtype)
+        U1[mask] = R[mask] ** 2 * (2 * np.log(R[mask]))
+
+        R_safe = np.maximum(R, 1e-10)
+        U2 = R * R * np.log(R_safe * R_safe)
+        U2[R < 1e-10] = 0
+        U = U2
+
         np.fill_diagonal(U, 0)  # should be redundant
         L[:K, :K] = U
         return L
