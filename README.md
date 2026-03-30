@@ -1,91 +1,74 @@
 # Distortion correction for EBSD/BSE images
 
-Contains python files for correcting distorted EBSD images using reference BSE images.
+A python GUI application designed to facilitate multimodal image alignment via a thin-plate spline transformation using identified control points.
 
 **Disclaimer: This codebase is under development. Although I try to update the README when changes are made, this does not always happen in a timely manner. Please post an issue if something is not working.**
 
 
 ## Usage
 
-To download the code, either run `git clone git@github.com:lambjames18/EBSD-Correction.git` (assuming git is installed) or download the zip file of the repository and unpack it. Once it is downloaded, move into the directory (`cd EBSD-Correction`) and simply run `python ui.py`. The conda environment used during development can be recreated using the following command. Note that this command will change depennding on your CUDA version (12.4 in my case) and your operating system (windows in my case).
+Running the GUI can be done py calling `python GUI.py` from the `src/tpsreg/` directory. The package manager uv is recommended for setting up the proper python environment. If you have uv installed, simply call `uv sync` from the root directory of the cloned repository containing the `pyproject.toml` file. The environment activation scripts, which are platform and terminal dependent, are then located in the `.venv/Scripts/` folder.
 
-`conda create -n align python numpy matplotlib h5py imageio scipy scikit-learn scikit-image pytorch torchvision pytorch-cuda=12.4 -c pytorch -c nvidia -c conda-forge`
+---
 
-For information about miniconda (the lightweight command line version of anaconda) see https://docs.conda.io/en/latest/miniconda.html. The environment (named "align" in the command above) will need to be activated in order to run the code. Alternatively, any python interpreter can be used as long as the following packages are installed on your computer:
+## Description of GUI
 
-- `python >= 3.8`
-- `numpy`
-- `matplotlib`
-- `h5py`
-- `imageio`
-- `scipy`
-- `scikit-learn`
-- `scikit-image`
-- `tifffile`
-- `pytorch` (for automatic distortion correction)
-- `torchvision` (for automatic distortion correction)
-- `kornia` (for automatic distortion correction)
+### Landing Page
 
-### Initial window
+The landing page is shown below. The left and right panels show the source and destination images, respectively. The top bar contains controls that allow one to change the slice (if 3D data is loaded), change the modality shown in the viewers (if multimodal data is loaded), perform contrast local adaptive histogram equalization (CLAHE) on the images, zoom in and out, and perform resolution matching between the source and destination images. The bottom bar contains a status message and a progress bar that is shown when loading/saving projects or running automatic distortion correction. The viewers is where points can be added (left click) or removed (right click).
 
-![image](./theme/UI-Landing.png "GUI")
+![image](./resources/theme/GUI-main.jpg "GUI")
 
-The initial window (above) shows two blank image viewers. These will contiaon the distorted (left) and the control (right) images. The top row is for general functions that are applied to both viewers. The bottom row is specific operations that can be applied to the individual viewers. The top tab (not shown) has "File" and "Apply". These are discussed below.
+---
 
-### Importing data
+### Menubar
 
-![image](./theme/Import-Data.png "GUI")
+![image](./resources/theme/GUI-file-menubar.jpg "File Menubar")
 
-The "File" tab provides the ability to open data. You will select either 2D or 3D data to import. The differences are minor between the two, but it determines what the code expects from the inputs. Upon clicking the import button, the above interface will be displayed (the 2D version is shown). You are required to select a distorted image and a control image, but the other inputs are optional. The notes underneath the inputs provide more detail about what the code expects. **NOTE: if you have different resolutions between your two data modes (high res BSE, low res EBSD for example) you will need to specify the pixel resolutions in order to correct for the disparity.** If the resolutions are the same, these entries can be left blank.
+The file menubar contains options for creating/opening/saving projects, importing/exporting data, and importing exporting control points.
 
-For 3D data, the distorted file must be a dream3d file and the control image must be the first image of all control images for the volume (no other files in the folder containing the control images, please).
+---
 
-Once you click "Open", a new interface will pop up (below). This provides a summary of the data read in by the code. Here you can opt to flip the control images (useful for TriBeam datasets, this just rotates the control images 180 degrees) and/or crop the control images to a specific ROI. If cropping is selected, a final UI will show that allows you to drag over an ROI selection. The two continue buttons indicate whether or not rescaling should be applied. As stated above, having different resolutions of data WILL NOT WORK. By rescaling the data, the disparity in resolution is removed and the control data is downsampled to match that of the distorted resolution. This is performed automaticaaly using `skimage.transform.rescale` if selected. YOU MUST SELECT THE OPTION TO RESCALE THE DATA IF DESIRED, RESCALING IS NOT THE DEFAULT.
+![image](./resources/theme/GUI-edit-menubar.jpg "Edit Menubar")
 
-For EBSD data, the UI can export an ANG file. However, this means you must import the data as an ANG file (it uses the input as a template). Hopefully this can be removed in the future.
+The edit menu contains options for undoing and redoing actions, clearning points in the project, and setting the resolution of the data. When setting the resolution, the user should specify the pixel size of the data in microns for both the source and destination images. The resolution is only used if the "Match Resolutions" option is enabled in the automatic correction settings. If this option is enabled, the control points will be automatically adjusted to account for differences in resolution between the source and destination images. If the resolution is not set, the code will assume that the source and destination images have the same resolution.
 
-![image](./theme/Data-Prep.png "GUI")
+---
 
-At this point you are ready to select control points!
+![image](./resources/theme/GUI-view-menubar.jpg "View Menubar")
 
-### Selecting control points
+The view menu contains options for toggling the visibility of various elements in the GUI (e.g. control points). "Hide points" is self explanatory and simply removes the points from being visible in the viewers. The "View corrected image" and "View correced image stack" options will open a new window showing the corrected source image overlaid on the destination image. In the preview, there are sliders that allow you to adjust the overlay, and in the 3D case, change the slice and the slicing axis through the volume. This window is shown below. Only thin-plate spline transformations (affine only or fully deformable) are supported in this GUI.
 
-Simply click on either image to place a reference point. Make sure that the order of the points is consistent between the two viewers (point 1 on distorted should connect to point 1 on control). Remove points by right cicking on them. The points can be cleared for the current pair of images using the "Clear Points" buttons. The view of the distorted data (typically EBSD data) can be changed using the "EBSD mode" dropdown under the distorted viewer. This allows you to view confidence index, image quality, IPF, color, etc. The "Zoom" dropdown lets you zoom into either image. The scroll bars next to the viewers allow you to move around the image. Currently the scroll bars are the only way to move around.
+![image](./resources/theme/GUI-preview.jpg "Correction Preview")
 
-For 3D data, the "Slice number" dropdown allows you to scroll through the volume and select control points for various slices. A few things to note:
-- If only one slice has control points, the same transformation is applied to all slices.
-- If multiple slices have control points, the transformation is interpolated between the two closest slices with control points.
-- If the first and/or last slice does not have control points, the closest slice with control points in copied to all slices needing extrapolation.
-- Example: 10 slices, control points on slices 2 and 7. Slices 1 and 2 use the transformation from slice 2. Slices 3-6 are interpolated transformations from slices 2 and 7. Slices 7-10 use the transformation from slice 2.
+The "View matched points" option of the view menubar will also open a new window showing the source and destination images side by side with lines connecting the matched control points. This window is shown below.
 
-### Viewing the alignment
+![image](./resources/theme/GUI-points.jpg "Matched Points")
 
-Under the "View transform (current image)" tab, you can select either a TPS or affine-only TPS to view the corrected data in an interactive viewer. "View transform (image stack)" tab provides the same for the entire image stack.
+---
 
-### Saving the data
+![image](./resources/theme/GUI-auto-menubar.jpg "Auto Menubar")
 
-Under the "File" tab, "Export 2D" will compute the alignment solution and save the corrected data. The first window will be to save the disorted data (corrected). The second window is for saving the control data (press cancel if you do not want to save either one). The outputs will match what one sees in the interaview view. "Export 3D" behaves similar, but it creates a new Dream3D file (based on the user input of the save location) and applies the correction to the data within the new Dream3D file.
+The auto menu contains options for running automatic distortion correction using a pretrained deep learning model. Using either SIFT or the pretrained MatchAnything model from HuggingFace, the code will attempt to find matched control points between the source and destination images. Note that if running the MatchAnything model, one will have to select the "Set MatchAnything checkpoint..." option from the menubar and direct the GUI to the location of the weights. Those weights can be downloaded [here](https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view). The MatchAnything model is quite large and may take a while to load and run, especially if you do not have a compatible NVIDIA GPU. Running the model for the first time will download some internal model weights and may take a while to run. After the first run, the model will be cached and should run much faster.
 
-**NOTE**: When exporting the data as an image (tif, tiff, png), if one wanted to apply alignment to Confidence Index and Image Quality, one would have to run "Export 2D" twice, each time with a different EBSD mode selected from the dropdown. **The data type is preserved in the saved image, this means that the preview of the image might look wrong, but reading in the data (python, FIJI, etc.) will show the correct data.** For integer data types, the alignemt requires that they go to a float, so the output transforms the float back into the target data type.
+If using MatchAnything, a few settings can be adjusted in the subsequent window that pops up (below). The default settings provide a good starting point for most cases, but feel free to experiment with the settings to see if you can get better results. "Num samples" refers to the maximum number of matched points that the model will return. "RANSAC Threshold" is used to select valid points and should be in the range 0.01-0.1 (deformable ransac) or ~5.0 (projective ransac) for most images. "RANSAC Max Trials" is the maximum number of iterations that RANSAC will run to find valid points and should be at least 100. "Enable RANSAC filtering" should almost always be True and will filter the matched points using RANSAC to find a subset of valid points that are consistent with a global transformation. This can help to improve the quality of the matched points, especially if there are a lot of outliers. "RANSAC Method" is the type of transformation that RANSAC will use to find valid points. The method should generally be set to "deformable" unless you know that your final transformation should be either an affine transformation or projective (homography) transformation. "deformable" and "projective" broadly produce very similar results.
 
-**NOTE:** EBSD .ang file exporting is now supported but is not the default. To use this, change the file type in the save as window.
+![image](./resources/theme/GUI-auto-options.jpg "MatchAnything Settings")
 
+---
 
-## Other files
+## Tutorial
 
-- `Outputs.py` Code for saving an ANG file.
-- `Inputs.py` Code for reading in dream3d files, images, image stacks, ang files, h5 files, etc...
-- `warping.py` Code for converting a set of control point into a transformation between two images (or two stacks) and also applying the transformation.
-- `tps.py` Custom class for the Thin-Plate Spline transform.
-- `InteractiveView.py` this permits interactive viewing of the solutions.
-- "test_data" contains data one can use to test the UI.
-- "theme" this contains images and style files for the tkinter GUI and the README file.
-- `SIFT.py` is for future plans.
+### Load data
+Load source and destination images using the "Open source image..." and "Open destination image..." options in the file menubar. The source image is the one that will be warped to match the destination image, so typically the more distorted image should be loaded as the source and the less distorted image should be loaded as the destination. Images and EBSD data (ang files or 2D, dream3d files for 3D) can be loaded. For any basic image type, the user will be prompted to name the modality of the data (e.q. BSE, TLD, SE, etc.). Additional modalities can be added by selecting the "Open [...] image..." additional times and entering different modality names. For EBSD data, all available modalities will be loaded automatically. Make sure to set the resolution of the data after loading using the "Set resolution..." option in the edit menubar. From here, it is recommended to save the project using the "Save project..." option in the file menubar. This will save all loaded data, control points, and settings in a single json file that can be easily reloaded later.
 
-## Future plans
+### Select control points
+With the images loaded, the user can add control points by left clicking in the viewers. Points can be removed by right clicking near a point. The control points should be placed in corresponding locations in the source and destination images. It is recommended to place points in areas that are easily identifiable in both images and are distributed evenly across the field of view.
 
-- Adding h5 support for 2D EBSD data
-- Adding cropping/rescaling functionality within the UI
-- Planning to incorporate automatic control point detection algorithms
-- Need to integrate the ability to have multiple control images for each distorted image (imagine toggling between BSE and SE images)
-- Plenty of other things...
+Tips include using CLAHE to enhance contrast in the images, zooming in to place points more accurately, and using the "Match resolutions" option so that features in the source and destination images are the same size. This will make it easier to place points in corresponding locations in the two images. Generally speaking, points should be well distributed across the field of view and there should be at least 10-20 points for a good correction, although this number may vary depending on the amount of distortion in the images and the desired level of accuracy.
+
+### Preview correction and revise points as needed
+With the control points selected, the user can preview the correction by selecting the "View corrected image" option in the view menubar. If the correction does not look good, try adjusting the control points and previewing again until you are satisfied with the result.
+
+### Export corrected data
+Once the user is satisfied with the correction, the corrected source image can be exported using the "Export corrected data..." option in the file menubar. You will be prompted to select an export format (note that an ANG file can only be exported if the source data was originally loaded from an ANG file). After selecting the export format, you will be prompted to select an export location. The GUI will save out the corrected source image, the original source image, and the destination image. **Note: You will have to select a cropping (source or destination) for the output. Source means that the output will have the same image dimensions as the source image. Destination means that the output will have the same as the destination. In most cases, destination will be preferred. However, for EBSD data, particularly dream3d files, one should select source so that the EBSD grid can be preserved.** The cropping selection is also required for the preview. If using the source cropping mode, the resolution should be set to ensure that features in the source and destination images are the same size.

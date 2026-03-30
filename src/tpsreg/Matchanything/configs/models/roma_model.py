@@ -1,0 +1,28 @@
+from Matchanything.src.config.default import _CN as cfg
+
+cfg.ROMA.RESIZE_BY_STRETCH = True
+cfg.DATASET.RESIZE_BY_STRETCH = True
+
+cfg.TRAINER.CANONICAL_LR = 8e-3
+cfg.TRAINER.WARMUP_STEP = 1875  # 3 epochs
+cfg.TRAINER.WARMUP_RATIO = 0.1
+
+cfg.TRAINER.MSLR_MILESTONES = [4, 6, 8, 10, 12, 14, 16, 18, 20]
+
+# pose estimation
+cfg.TRAINER.RANSAC_PIXEL_THR = 0.5
+
+cfg.TRAINER.OPTIMIZER = "adamw"
+cfg.TRAINER.ADAMW_DECAY = 0.1
+cfg.TRAINER.OPTIMIZER_EPS = 5e-7
+
+cfg.TRAINER.EPI_ERR_THR = 5e-4
+
+# fp16
+cfg.DATASET.FP16 = False
+cfg.LOFTR.FP16 = True
+
+# clip
+cfg.TRAINER.GRADIENT_CLIPPING = 0.5
+
+cfg.LOFTR.ROMA_LOSS.IGNORE_EMPTY_IN_SPARSE_MATCH_SPV = True

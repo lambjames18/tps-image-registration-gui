@@ -1,0 +1,47 @@
+<?xml version="1.0"?>
+<!DOCTYPE Xdmf SYSTEM "Xdmf.dtd"[]>
+<Xdmf xmlns:xi="http://www.w3.org/2003/XInclude" Version="2.2">
+ <Domain>
+  <!-- *************** START OF ImageDataContainer *************** -->
+  <Grid Name="ImageDataContainer" GridType="Uniform">
+    <Topology TopologyType="3DCoRectMesh" Dimensions="6 535 588 "></Topology>
+    <Geometry Type="ORIGIN_DXDYDZ">
+      <!-- Origin  Z, Y, X -->
+      <DataItem Format="XML" Dimensions="3">-6 0 -879</DataItem>
+      <!-- DxDyDz (Spacing/Resolution) Z, Y, X -->
+      <DataItem Format="XML" Dimensions="3">1.5 1.5 1.5</DataItem>
+    </Geometry>
+    <Attribute Name="Confidence Index" AttributeType="Scalar" Center="Cell">
+      <DataItem Format="HDF" Dimensions="5 534 587 1" NumberType="Float" Precision="4" >
+        EBSD.dream3d:/DataContainers/ImageDataContainer/CellData/Confidence Index
+      </DataItem>
+    </Attribute>
+    <Attribute Name="EulerAngles" AttributeType="Vector" Center="Cell">
+      <DataItem Format="HDF" Dimensions="5 534 587 3" NumberType="Float" Precision="4" >
+        EBSD.dream3d:/DataContainers/ImageDataContainer/CellData/EulerAngles
+      </DataItem>
+    </Attribute>
+    <Attribute Name="IPFColor" AttributeType="Vector" Center="Cell">
+      <DataItem Format="HDF" Dimensions="5 534 587 3" NumberType="UChar" Precision="1" >
+        EBSD.dream3d:/DataContainers/ImageDataContainer/CellData/IPFColor
+      </DataItem>
+    </Attribute>
+    <Attribute Name="Image Quality" AttributeType="Scalar" Center="Cell">
+      <DataItem Format="HDF" Dimensions="5 534 587 1" NumberType="Float" Precision="4" >
+        EBSD.dream3d:/DataContainers/ImageDataContainer/CellData/Image Quality
+      </DataItem>
+    </Attribute>
+    <Attribute Name="Phases" AttributeType="Scalar" Center="Cell">
+      <DataItem Format="HDF" Dimensions="5 534 587 1" NumberType="Int" Precision="4" >
+        EBSD.dream3d:/DataContainers/ImageDataContainer/CellData/Phases
+      </DataItem>
+    </Attribute>
+    <Attribute Name="SEM Signal" AttributeType="Scalar" Center="Cell">
+      <DataItem Format="HDF" Dimensions="5 534 587 1" NumberType="Float" Precision="4" >
+        EBSD.dream3d:/DataContainers/ImageDataContainer/CellData/SEM Signal
+      </DataItem>
+    </Attribute>
+  </Grid>
+  <!-- *************** END OF ImageDataContainer *************** -->
+ </Domain>
+</Xdmf>
