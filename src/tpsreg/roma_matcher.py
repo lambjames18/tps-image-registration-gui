@@ -29,7 +29,7 @@ import torch
 from PIL import Image
 
 import pytorch_lightning as pl
-from Matchanything.src.lightning.lightning_loftr import PL_LoFTR
+from Matchanything.src.lightning.lightning_loftr import PL_LoFTR, MatchAnything_Model
 from Matchanything.src.config.default import get_cfg_defaults
 from ransac import ransac_filter as ransac
 
@@ -173,7 +173,7 @@ def create_matcher(checkpoint_path: str = None) -> object:
 
 
 def apply_matcher(
-    matcher,
+    matcher: MatchAnything_Model,
     source_image: np.ndarray,
     destination_image: np.ndarray,
     ransac_filter: bool = True,
@@ -209,6 +209,8 @@ def apply_matcher(
         mkpts1 = data["mkpts1_f"].cpu().numpy()
         mconf = data["mconf"].cpu().numpy()
     print(f"Total matches found: {len(mkpts0)}")
+
+    # matcher.sample()
 
     # Apply RANSAC filtering if enabled
     if ransac_filter and len(mkpts0) >= 4:

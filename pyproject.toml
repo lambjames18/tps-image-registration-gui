@@ -1,0 +1,35 @@
+[project]
+name = "tpsreg"
+version = "0.1.0"
+description = "Python GUI application for registration of multimodal image data using a thin plate spline transformation."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "torchvision",
+    "kornia",
+    "numpy",
+    "scipy",
+    "scikit-image",
+    "matplotlib",
+    "h5py",
+    "einops",
+    "loguru",
+    "lightning",
+    "joblib",
+    "yacs",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

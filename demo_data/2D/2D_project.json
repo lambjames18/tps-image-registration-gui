@@ -4,149 +4,30 @@
     "created": null,
     "modified": null
   },
-  "source_points": {
-    "0": [
-      [
-        13,
-        510
-      ],
-      [
-        41,
-        423
-      ],
-      [
-        43,
-        215
-      ],
-      [
-        70,
-        123
-      ],
-      [
-        123,
-        495
-      ],
-      [
-        485,
-        514
-      ],
-      [
-        485,
-        443
-      ],
-      [
-        470,
-        46
-      ],
-      [
-        31,
-        322
-      ],
-      [
-        190,
-        419
-      ],
-      [
-        474,
-        200
-      ],
-      [
-        323,
-        301
-      ],
-      [
-        41,
-        49
-      ],
-      [
-        532,
-        122
-      ],
-      [
-        220,
-        65
-      ]
-    ]
-  },
-  "destination_points": {
-    "0": [
-      [
-        656,
-        1900
-      ],
-      [
-        734,
-        1650
-      ],
-      [
-        731,
-        961
-      ],
-      [
-        800,
-        622
-      ],
-      [
-        938,
-        1846
-      ],
-      [
-        1874,
-        1857
-      ],
-      [
-        1889,
-        1650
-      ],
-      [
-        1880,
-        241
-      ],
-      [
-        685,
-        1293
-      ],
-      [
-        1111,
-        1609
-      ],
-      [
-        1877,
-        803
-      ],
-      [
-        1471,
-        1195
-      ],
-      [
-        708,
-        313
-      ],
-      [
-        2027,
-        524
-      ],
-      [
-        1195,
-        351
-      ]
-    ]
-  },
+  "source_points": {},
+  "destination_points": {},
   "settings": {
     "current_slice": 0,
-    "source_mode": "IQ",
+    "source_mode": "phi1",
     "dest_mode": "SE",
     "clahe_source": false,
     "clahe_dest": false,
     "match_resolutions": true,
-    "source_resolution": 1.5,
-    "destination_resolution": 0.52083333,
+    "source_resolution": "1.5",
+    "destination_resolution": "0.52083333",
     "source_paths": {
-      "data": ["./demo_data/2D/EBSD.ang"]
+      "data": [
+        "E:\\EBSD-Correction\\demo_data\\2D\\EBSD.ang"
+      ]
     },
     "destination_paths": {
-      "BSE": ["./demo_data/2D/BSE.tif"],
-      "SE": ["./demo_data/2D/SE.tif"]
-    }
+      "BSE": [
+        "E:\\EBSD-Correction\\demo_data\\2D\\BSE.tif"
+      ],
+      "SE": [
+        "E:\\EBSD-Correction\\demo_data\\2D\\SE.tif"
+      ]
+    },
+    "checkpoint_path": "E:\\EBSD-Correction\\chkpt\\matchanything_roma.ckpt"
   }
 }

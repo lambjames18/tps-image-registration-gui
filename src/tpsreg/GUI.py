@@ -5,6 +5,7 @@ This module defines the interface that any view implementation must follow.
 """
 
 import os
+from pathlib import Path
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -75,6 +76,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
     def __init__(self):
         super().__init__()
 
+        self.resources_path = Path(__file__).parent.parent.parent / "resources"
+
         # Create presenter
         self.presenter = ApplicationPresenter()
         self.presenter.set_view(self)
@@ -93,7 +96,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self._create_controls()
         self._bind_events()
 
-        self.iconbitmap("EBSD-Correction.ico")
+        self.iconbitmap(self.resources_path / "EBSD-Correction.ico")
 
         logger.info("View initialized")
 
@@ -103,7 +106,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             self.fg = "#ffffff"
             self.hl = "#229fff"
             self.hl2 = "#00bb00"
-            self.tk.call("source", r"./theme/dark.tcl")
+            self.tk.call("source", self.resources_path / "theme/dark.tcl")
             s = ttk.Style(self)
             s.theme_use("azure-dark")
         elif style == "light":
@@ -111,7 +114,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             self.fg = "#000000"
             self.hl = "#007fff"
             self.hl2 = "#00bb00"
-            self.tk.call("source", r"./theme/light.tcl")
+            self.tk.call("source", self.resources_path / "theme/light.tcl")
             s = ttk.Style(self)
             s.theme_use("azure-light")
 
