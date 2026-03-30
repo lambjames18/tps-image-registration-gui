@@ -76,7 +76,7 @@ def get_config(checkpoint_path: str = None) -> Tuple[object, dict]:
         "npe2": False,
         "ckpt32": False,
         "fp32": False,
-        "dataset_name": "AF9628-Martensitic_SEM-SE-Stitch_EBSD_SameSlice",  # "All", #"5842WCu-Spalled_SEM-SE_SEM-BSE_Multiscale", #"5842WCu_Spalled_Cropping_Study", #"All", #"5842WCu-Spalled_SEM-SE_SEM-BSE_Multiscale", #"In718SS-CHESS", #"C103_fracture_surfaces",  #"AMSpalledTa", #"DDRX_Dislocations_900C_largeFOV", #"DDRX_Dislocations_900C", #"DDRX_Dislocations_1100C", #"MAX_Phase_Dislocations", #"CoNi90-AM-DIC", #"DIC_EBSD_Multimodal_In718", #"TRIP1_steel_LOM_EBSD", #"In718_same_slice_BSE_EBSD", #"SE2_EBSD_X2CrNi12",# "Martensitic_steel_AF_9628_SEM_EBSD",#"5842WCu_Spalled", #"In718SS-CHESS", ##"CoNi90_mid_OM-2-BSE", #"CoNi67_mid_OM-2-high_OM", #"CoNi67_high_OM-2-SE", #"CP700BC_cracks_block5_pedestal1_0", #"AMSpalledTa", #"CoNi67", "Liver_CT-MR"
+        "dataset_name": "",  # "All", #"5842WCu-Spalled_SEM-SE_SEM-BSE_Multiscale", #"5842WCu_Spalled_Cropping_Study", #"All", #"5842WCu-Spalled_SEM-SE_SEM-BSE_Multiscale", #"In718SS-CHESS", #"C103_fracture_surfaces",  #"AMSpalledTa", #"DDRX_Dislocations_900C_largeFOV", #"DDRX_Dislocations_900C", #"DDRX_Dislocations_1100C", #"MAX_Phase_Dislocations", #"CoNi90-AM-DIC", #"DIC_EBSD_Multimodal_In718", #"TRIP1_steel_LOM_EBSD", #"In718_same_slice_BSE_EBSD", #"SE2_EBSD_X2CrNi12",# "Martensitic_steel_AF_9628_SEM_EBSD",#"5842WCu_Spalled", #"In718SS-CHESS", ##"CoNi90_mid_OM-2-BSE", #"CoNi67_mid_OM-2-high_OM", #"CoNi67_high_OM-2-SE", #"CP700BC_cracks_block5_pedestal1_0", #"AMSpalledTa", #"CoNi67", "Liver_CT-MR"
         "data_root": "data/test_data",
         "output_root": "results",
         "plot_matches": True,

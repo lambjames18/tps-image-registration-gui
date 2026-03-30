@@ -638,7 +638,7 @@ class PointAutoIdentifier:
                 - confidence_threshold: Minimum confidence (default: 0.1)
                 - ransac_filter: Whether to apply RANSAC (default: True)
                 - ransac_threshold: RANSAC threshold in pixels (default: 5.5)
-                - num_samples: Maximum number of matches to sample (default: 5000)
+                - num_samples: Maximum number of matches to sample (default: 10)
                 - checkpoint_path: Path to model checkpoint
                 - device: Device to use ('cuda' or 'cpu')
                 - resize_by_stretch: Whether to resize by stretching (default: True)
@@ -656,6 +656,9 @@ class PointAutoIdentifier:
                 PointAutoIdentifier._matchanything_matcher = create_matcher(
                     checkpoint_path=checkpoint_path
                 )
+            
+            num_samples = kwargs.get("num_samples", 10)
+            PointAutoIdentifier._matchanything_matcher.config["sample"] = {"n_sample": num_samples}
             matcher = PointAutoIdentifier._matchanything_matcher
 
             src_points, dst_points, confidences = apply_matcher(
@@ -676,10 +679,10 @@ class PointAutoIdentifier:
                 )
                 return np.array([]), np.array([])
 
-            selection_method = "grid"  # grid, random, naive
 
             # Take the top N matches based on confidence
-            num_samples = kwargs.get("num_samples", 10)
+            """
+            selection_method = "grid"  # grid, random, naive
             if len(confidences) > num_samples:
                 # First define a minimum confidence threshold
                 sorted_indices = np.argsort(-confidences)
@@ -743,6 +746,7 @@ class PointAutoIdentifier:
                 logger.info(
                     f"Selected top {num_samples} matches (min confidence: {confidences[-1]:.4f})"
                 )
+            """
 
             return src_points.astype(int), dst_points.astype(int)
 

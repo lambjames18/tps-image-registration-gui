@@ -1,28 +1,13 @@
 # Distortion correction for EBSD/BSE images
 
-Contains python files for correcting distorted EBSD images using reference BSE images.
+A python GUI application designed to facilitate multimodal image alignment via a thin-plate spline transformation using identified control points.
 
 **Disclaimer: This codebase is under development. Although I try to update the README when changes are made, this does not always happen in a timely manner. Please post an issue if something is not working.**
 
 
 ## Usage
 
-To download the code, either run `git clone git@github.com:lambjames18/EBSD-Correction.git` (assuming git is installed) or download the zip file of the repository and unpack it. Once it is downloaded, move into the directory (`cd EBSD-Correction`) and simply run `python GUI.py`. The conda environment used during development can be recreated using the `create_env.bat` file (Windows only). This will create a conda environment named "ebsd_correction" with all required packages installed. Note that the pytorch installation line may need to be modified depending on your system and whether or not you have a compatible NVIDIA GPU. See https://pytorch.org/get-started/locally/ for more information.
-
-For information about miniconda (the lightweight command line version of anaconda) see https://docs.conda.io/en/latest/miniconda.html. The environment (named "align" in the command above) will need to be activated in order to run the code. Alternatively, any python interpreter can be used as long as the following packages are installed on your computer:
-
-- `python >= 3.10`
-- `numpy`
-- `matplotlib`
-- `h5py`
-- `imageio`
-- `scipy`
-- `scikit-learn`
-- `scikit-image`
-- `tifffile`
-- `pytorch` (for automatic distortion correction)
-- `torchvision` (for automatic distortion correction)
-- `kornia` (for automatic distortion correction)
+Running the GUI can be done py calling `python GUI.py` from the `src/tpsreg/` directory. The package manager uv is recommended for setting up the proper python environment. If you have uv installed, simply call `uv sync` from the root directory of the cloned repository containing the `pyproject.toml` file. The environment activation scripts, which are platform and terminal dependent, are then located in the `.venv/Scripts/` folder.
 
 ---
 
@@ -32,43 +17,43 @@ For information about miniconda (the lightweight command line version of anacond
 
 The landing page is shown below. The left and right panels show the source and destination images, respectively. The top bar contains controls that allow one to change the slice (if 3D data is loaded), change the modality shown in the viewers (if multimodal data is loaded), perform contrast local adaptive histogram equalization (CLAHE) on the images, zoom in and out, and perform resolution matching between the source and destination images. The bottom bar contains a status message and a progress bar that is shown when loading/saving projects or running automatic distortion correction. The viewers is where points can be added (left click) or removed (right click).
 
-![image](./theme/GUI-main.jpg "GUI")
+![image](./resources/theme/GUI-main.jpg "GUI")
 
 ---
 
 ### Menubar
 
-![image](./theme/GUI-file-menubar.jpg "File Menubar")
+![image](./resources/theme/GUI-file-menubar.jpg "File Menubar")
 
 The file menubar contains options for creating/opening/saving projects, importing/exporting data, and importing exporting control points.
 
 ---
 
-![image](./theme/GUI-edit-menubar.jpg "Edit Menubar")
+![image](./resources/theme/GUI-edit-menubar.jpg "Edit Menubar")
 
 The edit menu contains options for undoing and redoing actions, clearning points in the project, and setting the resolution of the data. When setting the resolution, the user should specify the pixel size of the data in microns for both the source and destination images. The resolution is only used if the "Match Resolutions" option is enabled in the automatic correction settings. If this option is enabled, the control points will be automatically adjusted to account for differences in resolution between the source and destination images. If the resolution is not set, the code will assume that the source and destination images have the same resolution.
 
 ---
 
-![image](./theme/GUI-view-menubar.jpg "View Menubar")
+![image](./resources/theme/GUI-view-menubar.jpg "View Menubar")
 
 The view menu contains options for toggling the visibility of various elements in the GUI (e.g. control points). "Hide points" is self explanatory and simply removes the points from being visible in the viewers. The "View corrected image" and "View correced image stack" options will open a new window showing the corrected source image overlaid on the destination image. In the preview, there are sliders that allow you to adjust the overlay, and in the 3D case, change the slice and the slicing axis through the volume. This window is shown below. Only thin-plate spline transformations (affine only or fully deformable) are supported in this GUI.
 
-![image](./theme/GUI-preview.jpg "Correction Preview")
+![image](./resources/theme/GUI-preview.jpg "Correction Preview")
 
 The "View matched points" option of the view menubar will also open a new window showing the source and destination images side by side with lines connecting the matched control points. This window is shown below.
 
-![image](./theme/GUI-points.jpg "Matched Points")
+![image](./resources/theme/GUI-points.jpg "Matched Points")
 
 ---
 
-![image](./theme/GUI-auto-menubar.jpg "Auto Menubar")
+![image](./resources/theme/GUI-auto-menubar.jpg "Auto Menubar")
 
 The auto menu contains options for running automatic distortion correction using a pretrained deep learning model. Using either SIFT or the pretrained MatchAnything model from HuggingFace, the code will attempt to find matched control points between the source and destination images. Note that if running the MatchAnything model, one will have to select the "Set MatchAnything checkpoint..." option from the menubar and direct the GUI to the location of the weights. Those weights can be downloaded [here](https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view). The MatchAnything model is quite large and may take a while to load and run, especially if you do not have a compatible NVIDIA GPU. Running the model for the first time will download some internal model weights and may take a while to run. After the first run, the model will be cached and should run much faster.
 
-If using MatchAnything, a few settings can be adjusted in the subsequent window that pops up (below). The default settings provide a good starting point for most cases, but feel free to experiment with the settings to see if you can get better results. "Num samples" refers to the maximum number of matched points that the model will return. "RANSAC Threshold" is used to select valid points and should be in the range 0.01-0.1 for most images. "RANSAC Max Trials" is the maximum number of iterations that RANSAC will run to find valid points and should be at least 100. "Enable RANSAC filtering" should almost always be True and will filter the matched points using RANSAC to find a subset of valid points that are consistent with a global transformation. This can help to improve the quality of the matched points, especially if there are a lot of outliers. "RANSAC Method" is the type of transformation that RANSAC will use to find valid points and should generally be set to "deformable" for this application (a thin-plate spline transformation is a deformable transformation).
+If using MatchAnything, a few settings can be adjusted in the subsequent window that pops up (below). The default settings provide a good starting point for most cases, but feel free to experiment with the settings to see if you can get better results. "Num samples" refers to the maximum number of matched points that the model will return. "RANSAC Threshold" is used to select valid points and should be in the range 0.01-0.1 (deformable ransac) or ~5.0 (projective ransac) for most images. "RANSAC Max Trials" is the maximum number of iterations that RANSAC will run to find valid points and should be at least 100. "Enable RANSAC filtering" should almost always be True and will filter the matched points using RANSAC to find a subset of valid points that are consistent with a global transformation. This can help to improve the quality of the matched points, especially if there are a lot of outliers. "RANSAC Method" is the type of transformation that RANSAC will use to find valid points. The method should generally be set to "deformable" unless you know that your final transformation should be either an affine transformation or projective (homography) transformation. "deformable" and "projective" broadly produce very similar results.
 
-![image](./theme/GUI-auto-options.jpg "MatchAnything Settings")
+![image](./resources/theme/GUI-auto-options.jpg "MatchAnything Settings")
 
 ---
 

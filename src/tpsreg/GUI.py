@@ -1805,7 +1805,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         ransac_combo = ttk.Combobox(
             method_frame,
             textvariable=ransac_method_var,
-            values=["deformable", "affine", "similarity"],
+            values=["deformable", "affine", "projective"],
             state="readonly",
             width=15,
         )
