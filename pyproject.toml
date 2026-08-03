@@ -97,7 +97,15 @@ markers = [
 
 [tool.coverage.run]
 source = ["tpsreg"]
-omit = ["*/Matchanything/*"]
+omit = [
+    # Vendored upstream code, not ours to cover.
+    "*/Matchanything/*",
+    # The Tk view. Its behaviour is exercised by the smoke tests in
+    # tests/test_gui.py, but line coverage of widget construction measures
+    # very little and its size (1400 statements) would dominate the headline
+    # number for the logic that is actually under test.
+    "*/tpsreg/GUI.py",
+]
 
 [tool.coverage.report]
 exclude_lines = [

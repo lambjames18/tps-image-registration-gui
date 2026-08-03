@@ -51,8 +51,22 @@ Useful subsets:
 ```bash
 pytest tests/test_tps.py -v             # one module
 pytest -m "not slow"                    # skip the slower tests
+pytest -m "not gui"                     # skip tests that need a display
 pytest --cov=tpsreg --cov-report=term   # with coverage
 ```
+
+## Badges
+
+The coverage and tests badges are self-hosted, with no external service. On a
+push to the default branch, CI runs `scripts/make_badges.py` over the coverage
+and JUnit reports and commits two small JSON files to an orphan `badges`
+branch; the README points shields.io at them. The badge branch never appears in
+the source history.
+
+`src/tpsreg/GUI.py` is excluded from the coverage measurement. Its behaviour is
+covered by the smoke tests in `tests/test_gui.py`, but line coverage of widget
+construction measures very little, and at ~1400 statements it would dominate
+the figure for the logic actually under test. Everything else counts.
 
 ## Guidelines
 

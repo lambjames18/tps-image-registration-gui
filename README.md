@@ -1,6 +1,8 @@
 # Multimodal Image Registration GUI
 
 [![CI](https://github.com/lambjames18/tps-image-registration-gui/actions/workflows/ci.yml/badge.svg)](https://github.com/lambjames18/tps-image-registration-gui/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Flambjames18%2Ftps-image-registration-gui%2Fbadges%2Fcoverage.json)](https://github.com/lambjames18/tps-image-registration-gui/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Flambjames18%2Ftps-image-registration-gui%2Fbadges%2Ftests.json)](https://github.com/lambjames18/tps-image-registration-gui/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
