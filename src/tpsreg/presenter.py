@@ -5,23 +5,24 @@ This module acts as the intermediary between the model and view layers.
 """
 
 import logging
-from pathlib import Path
-from typing import Optional, Tuple, Dict, Any, List, Union
 from enum import Enum
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 
 from tpsreg.models import (
-    Point,
-    PointManager,
-    PointAutoIdentifier,
-    ImageLoader,
-    ImageWriter,
-    TransformManager,
-    ImageProcessor,
-    ProjectManager,
-    ImageData,
-    TransformType,
     DataFormat,
+    ImageData,
+    ImageLoader,
+    ImageProcessor,
+    ImageWriter,
+    Point,
+    PointAutoIdentifier,
+    PointManager,
+    ProjectManager,
+    TransformManager,
+    TransformType,
 )
 
 # Configure logging
@@ -57,8 +58,8 @@ class ApplicationPresenter:
         self.point_auto_identifier = PointAutoIdentifier()
 
         # Data storage
-        self.source_image: Optional[ImageData] = None
-        self.destination_image: Optional[ImageData] = None
+        self.source_image: ImageData | None = None
+        self.destination_image: ImageData | None = None
         self.current_slice = 0
         self.current_source_mode = "Intensity"
         self.current_dest_mode = "Intensity"
@@ -72,8 +73,8 @@ class ApplicationPresenter:
         self.view = None
 
         # Paths
-        self.source_points_path: Optional[Path] = None
-        self.dest_points_path: Optional[Path] = None
+        self.source_points_path: Path | None = None
+        self.dest_points_path: Path | None = None
 
         logger.info("ApplicationPresenter initialized")
 
@@ -111,9 +112,9 @@ class ApplicationPresenter:
             self._notify_view_project_reset()
 
         except Exception as e:
-            logger.error(f"Failed to create new project: {e}")
+            logger.error("Failed to create new project: %s", e)
             self._notify_view_error(
-                f"Failed to create new project: {str(e)}, ({parse_error()})"
+                f"Failed to create new project: {e!s}, ({parse_error()})"
             )
 
     def has_unsaved_changes(self) -> bool:
@@ -136,9 +137,9 @@ class ApplicationPresenter:
 
     def load_source_image(
         self,
-        path: Union[str, Path, List[Path], List[str]],
+        path: str | Path | list[Path] | list[str],
         resolution: float = 1.0,
-        modality_name: str = None,
+        modality_name: str | None = None,
     ) -> bool:
         """Load source (distorted) image."""
         try:
@@ -164,19 +165,19 @@ class ApplicationPresenter:
             new_image_data = ImageLoader.load(path, resolution, modality_name)
 
             # Make sure the new data has the same number of slices as the source image
-            if self.destination_image:
-                if (
-                    self.destination_image.shape[0]
-                    != list(new_image_data.data.values())[0].shape[0]
-                ):
-                    raise ValueError(
-                        "Source and destination images must have the same number of slices."
-                    )
+            if self.destination_image and (
+                self.destination_image.shape[0]
+                != next(iter(new_image_data.data.values())).shape[0]
+            ):
+                raise ValueError(
+                    "Source and destination images must have the same number of slices."
+                )
 
             # If this is the first time reading a source image, set it
             if self.source_image is None:
                 logger.debug(
-                    f"New source image. Setting with modalities: {new_image_data.modalities}"
+                    "New source image. Setting with modalities: %s",
+                    new_image_data.modalities,
                 )
                 self.source_image = new_image_data
                 # Set default points path if not set
@@ -189,11 +190,12 @@ class ApplicationPresenter:
                     self.current_source_mode = self.source_image.modalities[0]
             else:
                 logger.debug(
-                    f"Adding modality to existing source image: {new_image_data.modalities}"
+                    "Adding modality to existing source image: %s",
+                    new_image_data.modalities,
                 )
                 # Add the new modality to existing image data
-                modality_key = list(new_image_data.data.keys())[0]
-                modality_path = list(new_image_data.paths.values())[0]
+                modality_key = next(iter(new_image_data.data.keys()))
+                modality_path = next(iter(new_image_data.paths.values()))
                 self.source_image.add_modality(
                     modality_key, new_image_data.data[modality_key], modality_path
                 )
@@ -205,17 +207,17 @@ class ApplicationPresenter:
             return True
 
         except Exception as e:
-            logger.error(f"Failed to load source image: {e} ({parse_error()})")
+            logger.error("Failed to load source image: %s (%s)", e, parse_error())
             self._notify_view_error(
-                f"Failed to load source image: {str(e)}, ({parse_error()})"
+                f"Failed to load source image: {e!s}, ({parse_error()})"
             )
             return False
 
     def load_destination_image(
         self,
-        path: Union[Path, List[Path]],
+        path: Path | list[Path],
         resolution: float = 1.0,
-        modality_name: str = None,
+        modality_name: str | None = None,
     ) -> bool:
         """Load destination (control) image."""
         try:
@@ -229,14 +231,13 @@ class ApplicationPresenter:
             new_image_data = ImageLoader.load(path, resolution, modality_name)
 
             # Make sure the new data has the same number of slices as the source image
-            if self.source_image:
-                if (
-                    self.source_image.shape[0]
-                    != list(new_image_data.data.values())[0].shape[0]
-                ):
-                    raise ValueError(
-                        "Source and destination images must have the same number of slices."
-                    )
+            if self.source_image and (
+                self.source_image.shape[0]
+                != next(iter(new_image_data.data.values())).shape[0]
+            ):
+                raise ValueError(
+                    "Source and destination images must have the same number of slices."
+                )
 
             # If this is the first time reading a destination image, set it
             if self.destination_image is None:
@@ -255,7 +256,8 @@ class ApplicationPresenter:
                 # Switch to the newly added modality
                 self.current_dest_mode = new_image_data.modalities[0]
                 logger.info(
-                    f"Added modality '{new_image_data.modalities[0]}' to destination image and switched to it"
+                    "Added modality '%s' to destination image and switched to it",
+                    new_image_data.modalities[0],
                 )
 
             self.project_manager.mark_modified()
@@ -263,9 +265,9 @@ class ApplicationPresenter:
             return True
 
         except Exception as e:
-            logger.error(f"Failed to load destination image: {e} ({parse_error()})")
+            logger.error("Failed to load destination image: %s (%s)", e, parse_error())
             self._notify_view_error(
-                f"Failed to load destination image: {str(e)}, ({parse_error()})"
+                f"Failed to load destination image: {e!s}, ({parse_error()})"
             )
             return False
 
@@ -279,14 +281,14 @@ class ApplicationPresenter:
                 source_path, current_slice=self.current_slice, is_2d=is_2d
             )
             self.source_points_path = source_path
-            logger.info(f"Loaded source control points from {source_path}")
+            logger.info("Loaded source control points from %s", source_path)
             self._notify_view_points_changed()
             return True
 
         except Exception as e:
-            logger.error(f"Failed to load source points: {e}")
+            logger.error("Failed to load source points: %s", e)
             self._notify_view_error(
-                f"Failed to load source points: {str(e)}, ({parse_error()})"
+                f"Failed to load source points: {e!s}, ({parse_error()})"
             )
             return False
 
@@ -302,14 +304,14 @@ class ApplicationPresenter:
                 dest_path, current_slice=self.current_slice, is_2d=is_2d
             )
             self.dest_points_path = dest_path
-            logger.info(f"Loaded destination control points from {dest_path}")
+            logger.info("Loaded destination control points from %s", dest_path)
             self._notify_view_points_changed()
             return True
 
         except Exception as e:
-            logger.error(f"Failed to load destination points: {e}")
+            logger.error("Failed to load destination points: %s", e)
             self._notify_view_error(
-                f"Failed to load destination points: {str(e)}, ({parse_error()})"
+                f"Failed to load destination points: {e!s}, ({parse_error()})"
             )
             return False
 
@@ -319,14 +321,14 @@ class ApplicationPresenter:
         """Set the checkpoint path for MatchAnything point detection."""
         try:
             PointAutoIdentifier.set_checkpoint_path(str(path))
-            logger.info(f"Checkpoint path set to: {path}")
+            logger.info("Checkpoint path set to: %s", path)
         except Exception as e:
-            logger.error(f"Failed to set checkpoint path: {e}")
+            logger.error("Failed to set checkpoint path: %s", e)
             self._notify_view_error(
-                f"Failed to set checkpoint path: {str(e)}, ({parse_error()})"
+                f"Failed to set checkpoint path: {e!s}, ({parse_error()})"
             )
 
-    def get_checkpoint_path(self) -> Optional[str]:
+    def get_checkpoint_path(self) -> str | None:
         """Get the current checkpoint path for MatchAnything."""
         return PointAutoIdentifier.checkpoint_path
 
@@ -395,7 +397,7 @@ class ApplicationPresenter:
                     "CLAHE to boost contrast, or placing points manually."
                 )
                 return False
-            logger.info(f"Detected {len(src_points)} points")
+            logger.info("Detected %s points", len(src_points))
 
             # Make sure there are no duplicate points
             src_points, idx = np.unique(src_points, axis=0, return_index=True)
@@ -403,7 +405,9 @@ class ApplicationPresenter:
             dst_points, idx = np.unique(dst_points, axis=0, return_index=True)
             src_points = src_points[idx]
             logger.info(
-                f"{detection_kwargs['num_samples'] - len(src_points)} duplicate points removed ({len(src_points)} unique points remain)"
+                "%s duplicate points removed (%s unique points remain)",
+                detection_kwargs["num_samples"] - len(src_points),
+                len(src_points),
             )
 
             # Remove points that are already present
@@ -416,7 +420,7 @@ class ApplicationPresenter:
                 points = np.array(
                     [
                         (sp, dp)
-                        for sp, dp in zip(src_points, dst_points)
+                        for sp, dp in zip(src_points, dst_points, strict=False)
                         if tuple(sp) not in existing_src_delta
                         and tuple(dp) not in existing_dst_delta
                     ]
@@ -426,7 +430,7 @@ class ApplicationPresenter:
                         "No new points to add after removing existing points"
                     )
                     return False
-                logger.info(f"{len(src_points) - len(points)} existing points removed")
+                logger.info("%s existing points removed", len(src_points) - len(points))
                 src_points = np.array([p[0] for p in points])
                 dst_points = np.array([p[1] for p in points])
 
@@ -439,10 +443,10 @@ class ApplicationPresenter:
                 )
 
             logger.info(
-                f"Auto-detected {len(src_points)} new control points using {method}"
+                "Auto-detected %s new control points using %s", len(src_points), method
             )
             # Add detected points to point manager
-            for sp, dp in zip(src_points, dst_points):
+            for sp, dp in zip(src_points, dst_points, strict=False):
                 self.point_manager.source_points.add_point(
                     Point(int(sp[0]), int(sp[1]), self.current_slice)
                 )
@@ -457,9 +461,9 @@ class ApplicationPresenter:
             return True
 
         except Exception as e:
-            logger.error(f"Auto point detection failed: {e}")
+            logger.error("Auto point detection failed: %s", e)
             self._notify_view_error(
-                f"Auto point detection failed: {str(e)}, ({parse_error()})"
+                f"Auto point detection failed: {e!s}, ({parse_error()})"
             )
             return False
 
@@ -505,7 +509,7 @@ class ApplicationPresenter:
             return 0 <= x < width and 0 <= y < height
 
         except Exception as e:
-            logger.error(f"Error checking point bounds: {e}")
+            logger.error("Error checking point bounds: %s", e)
             return False
 
     def add_point(self, source: str, x: int, y: int) -> None:
@@ -520,7 +524,9 @@ class ApplicationPresenter:
 
             image = self.source_image if source == "source" else self.destination_image
             if image is None:
-                logger.warning("Cannot add a %s point before an image is loaded", source)
+                logger.warning(
+                    "Cannot add a %s point before an image is loaded", source
+                )
                 return
 
             # Reject clicks outside the image rather than storing coordinates
@@ -555,8 +561,8 @@ class ApplicationPresenter:
             self._notify_view_points_changed()
 
         except Exception as e:
-            logger.error(f"Failed to add point: {e}")
-            self._notify_view_error(f"Failed to add point: {str(e)}, ({parse_error()})")
+            logger.error("Failed to add point: %s", e)
+            self._notify_view_error(f"Failed to add point: {e!s}, ({parse_error()})")
 
     def remove_point(self, point_index: int) -> None:
         """Remove a control point."""
@@ -571,10 +577,8 @@ class ApplicationPresenter:
                 self._notify_view_points_changed()
 
         except Exception as e:
-            logger.error(f"Failed to remove point: {e}")
-            self._notify_view_error(
-                f"Failed to remove point: {str(e)}, ({parse_error()})"
-            )
+            logger.error("Failed to remove point: %s", e)
+            self._notify_view_error(f"Failed to remove point: {e!s}, ({parse_error()})")
 
     def clear_points(self, slice_only: bool = True) -> None:
         """Clear control points."""
@@ -589,12 +593,10 @@ class ApplicationPresenter:
             self._notify_view_points_changed()
 
         except Exception as e:
-            logger.error(f"Failed to clear points: {e}")
-            self._notify_view_error(
-                f"Failed to clear points: {str(e)}, ({parse_error()})"
-            )
+            logger.error("Failed to clear points: %s", e)
+            self._notify_view_error(f"Failed to clear points: {e!s}, ({parse_error()})")
 
-    def get_points(self) -> Tuple[np.ndarray, np.ndarray]:
+    def get_points(self) -> tuple[np.ndarray, np.ndarray]:
         """Get current points for display."""
         return self.point_manager.get_point_pairs(self.current_slice)
 
@@ -625,11 +627,11 @@ class ApplicationPresenter:
 
     def get_current_images(
         self,
-        scale: float = None,
-        src_scale: float = None,
-        dst_scale: float = None,
+        scale: float | None = None,
+        src_scale: float | None = None,
+        dst_scale: float | None = None,
         normalize=True,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Get current images for display."""
         if scale is not None:
             src_scale = scale
@@ -665,14 +667,14 @@ class ApplicationPresenter:
                     src_img = self.image_processor.resize_image(src_img, src_scale)
 
                 if src_img.ndim == 2:
-                    src_img = src_img.reshape(src_img.shape + (channels,))
+                    src_img = src_img.reshape((*src_img.shape, channels))
 
                 # Normalize to uint8
                 if normalize:
                     src_img = self.image_processor.normalize_to_uint8(src_img)
 
             except Exception as e:
-                logger.error(f"Failed to get current source image: {e}")
+                logger.error("Failed to get current source image: %s", e)
                 src_img = None
 
         # Get the current destination image
@@ -702,19 +704,19 @@ class ApplicationPresenter:
                     dst_img = self.image_processor.resize_image(dst_img, dst_scale)
 
                 if dst_img.ndim == 2:
-                    dst_img = dst_img.reshape(dst_img.shape + (channels,))
+                    dst_img = dst_img.reshape((*dst_img.shape, channels))
 
                 # Normalize to uint8
                 if normalize:
                     dst_img = self.image_processor.normalize_to_uint8(dst_img)
 
             except Exception as e:
-                logger.error(f"Failed to get current destination image: {e}")
+                logger.error("Failed to get current destination image: %s", e)
                 dst_img = None
 
         return src_img, dst_img
 
-    def get_current_image_stacks(self, normalize=True) -> Tuple[np.ndarray, np.ndarray]:
+    def get_current_image_stacks(self, normalize=True) -> tuple[np.ndarray, np.ndarray]:
         """Get current image stacks for 3D processing."""
         # Get the current source image stack
         if not self.source_image:
@@ -762,7 +764,7 @@ class ApplicationPresenter:
         preview: bool = False,
         return_data: bool = False,
         tform: Any = None,
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         """Apply transformation to current image/slice."""
         try:
             # Get current source image
@@ -815,21 +817,21 @@ class ApplicationPresenter:
                 return warped, src_img, dst_img
 
         except Exception as e:
-            logger.error(f"Failed to apply transform: {e}")
+            logger.error("Failed to apply transform: %s", e)
             self._notify_view_error(
-                f"Failed to apply transform: {str(e)}, ({parse_error()})"
+                f"Failed to apply transform: {e!s}, ({parse_error()})"
             )
             return None
 
     def apply_transform_3d(
         self,
-        transforms: Dict[int, Any] = None,
+        transforms: dict[int, Any] | None = None,
         transform_type: TransformType = TransformType.TPS,
         crop_mode: CropMode = CropMode.SOURCE,
         normalize: bool = True,
         preview: bool = False,
         return_data: bool = False,
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray | None:
         """Apply transformation to entire 3D stack."""
         try:
             # Get image stacks
@@ -889,9 +891,9 @@ class ApplicationPresenter:
                 return warped_stack, src_stack, dst_stack, transforms
 
         except Exception as e:
-            logger.error(f"Failed to apply 3D transform: {e}")
+            logger.error("Failed to apply 3D transform: %s", e)
             self._notify_view_error(
-                f"Failed to apply 3D transform: {str(e)}, ({parse_error()})"
+                f"Failed to apply 3D transform: {e!s}, ({parse_error()})"
             )
             return None
 
@@ -992,10 +994,10 @@ class ApplicationPresenter:
                 transforms = None
                 dst_modes = self.destination_image.modalities
                 for mode in self.source_image.modalities:
-                    logger.info(f"Processing modality: {mode}")
+                    logger.info("Processing modality: %s", mode)
                     self.set_source_mode(mode)
                     self._notify_view_update_display()
-                    warped_stack, src_stack, dst_stack, _t = self.apply_transform_3d(
+                    warped_stack, _src_stack, dst_stack, _t = self.apply_transform_3d(
                         transform_type=transform_type,
                         crop_mode=crop_mode,
                         normalize=False,
@@ -1018,10 +1020,8 @@ class ApplicationPresenter:
                 self.image_writer.save(warped_stacks, path, self.source_image.path[0])
 
         except Exception as e:
-            logger.error(f"Failed to export data: {e}")
-            self._notify_view_error(
-                f"Failed to export data: {str(e)}, ({parse_error()})"
-            )
+            logger.error("Failed to export data: %s", e)
+            self._notify_view_error(f"Failed to export data: {e!s}, ({parse_error()})")
             return False
 
     def export_transform(self, path: Path, transform_type: TransformType) -> bool:
@@ -1053,9 +1053,9 @@ class ApplicationPresenter:
             return True
 
         except Exception as e:
-            logger.error(f"Failed to export transform: {e}")
+            logger.error("Failed to export transform: %s", e)
             self._notify_view_error(
-                f"Failed to export transform: {str(e)}, ({parse_error()})"
+                f"Failed to export transform: {e!s}, ({parse_error()})"
             )
             return False
 
@@ -1095,10 +1095,8 @@ class ApplicationPresenter:
             return True
 
         except Exception as e:
-            logger.error(f"Failed to save project: {e}")
-            self._notify_view_error(
-                f"Failed to save project: {str(e)}, ({parse_error()})"
-            )
+            logger.error("Failed to save project: %s", e)
+            self._notify_view_error(f"Failed to save project: {e!s}, ({parse_error()})")
             return False
 
     def load_project(self, path: Path) -> bool:
@@ -1169,10 +1167,8 @@ class ApplicationPresenter:
             return True
 
         except Exception as e:
-            logger.error(f"Failed to load project: {e}")
-            self._notify_view_error(
-                f"Failed to load project: {str(e)}, ({parse_error()})"
-            )
+            logger.error("Failed to load project: %s", e)
+            self._notify_view_error(f"Failed to load project: {e!s}, ({parse_error()})")
             return False
 
     # ========== Navigation ==========
@@ -1202,25 +1198,25 @@ class ApplicationPresenter:
         if self.destination_image:
             self.destination_image.resolution = dst_res
 
-    def get_slice_range(self) -> Tuple[int, int]:
+    def get_slice_range(self) -> tuple[int, int]:
         """Get valid slice range."""
         if self.source_image:
             return 0, self.source_image.shape[0] - 1
         return 0, 0
 
-    def get_source_modalities(self) -> List[str]:
+    def get_source_modalities(self) -> list[str]:
         """Get available source image modalities."""
         if self.source_image:
             return self.source_image.modalities
         return []
 
-    def get_destination_modalities(self) -> List[str]:
+    def get_destination_modalities(self) -> list[str]:
         """Get available destination image modalities."""
         if self.destination_image:
             return self.destination_image.modalities
         return []
 
-    def get_resolutions(self) -> Tuple[float, float]:
+    def get_resolutions(self) -> tuple[float, float]:
         """Get image resolutions."""
         src_res = self.source_image.resolution if self.source_image else 1.0
         dst_res = self.destination_image.resolution if self.destination_image else 1.0
@@ -1261,9 +1257,9 @@ class ApplicationPresenter:
             )
 
         except Exception as e:
-            logger.error(f"Failed to show matched points: {e}")
+            logger.error("Failed to show matched points: %s", e)
             self._notify_view_error(
-                f"Failed to show matched points: {str(e)}, ({parse_error()})"
+                f"Failed to show matched points: {e!s}, ({parse_error()})"
             )
 
     # ========== Private Helper Methods ==========
@@ -1276,14 +1272,14 @@ class ApplicationPresenter:
                     self.source_points_path, self.dest_points_path
                 )
             except Exception as e:
-                logger.error(f"Failed to save points: {e}")
+                logger.error("Failed to save points: %s", e)
 
     def _get_cropping_slice(
         self,
         warped: np.ndarray,
-        original_shape: Tuple,
+        original_shape: tuple,
         crop_mode: CropMode,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Get cropping slice based on crop mode. Returns slice objects for each dimension (Z, Y, X, C)."""
         if crop_mode == CropMode.SOURCE:
             # Crop to match source grid size
@@ -1380,9 +1376,9 @@ class ApplicationPresenter:
 
 
 def parse_error():
-    import sys
     import os
+    import sys
 
-    exc_type, exc_obj, exc_tb = sys.exc_info()
+    exc_type, _exc_obj, exc_tb = sys.exc_info()
     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
     return (exc_type, fname, exc_tb.tb_lineno)

@@ -110,7 +110,7 @@ class TestEstimation:
         src = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
         dst = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])
         tform = ThinPlateSplineTransform()
-        with pytest.raises(ValueError, match="collinear|solve"):
+        with pytest.raises(ValueError, match=r"collinear|solve"):
             tform.estimate(src, dst, (10, 10))
 
     def test_non_square_output_shape(self, square_grid_points):
@@ -184,7 +184,9 @@ class TestChunkSizeEstimation:
     def test_has_a_floor(self):
         """A tiny budget must not produce a 1-pixel-per-chunk pathology."""
         tform = ThinPlateSplineTransform()
-        assert tform._estimate_chunk_size(10**8, 10**6, available_memory_gb=0.001) >= 1000
+        assert (
+            tform._estimate_chunk_size(10**8, 10**6, available_memory_gb=0.001) >= 1000
+        )
 
 
 class TestSystemMatrix:

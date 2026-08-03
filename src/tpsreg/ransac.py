@@ -8,7 +8,6 @@ by Tran et al.
 from __future__ import annotations
 
 import logging
-from typing import Optional, Tuple
 
 import numpy as np
 
@@ -18,7 +17,7 @@ logger = logging.getLogger(__name__)
 def _normalize_correspondences(
     src_points: np.ndarray,
     dst_points: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Normalize correspondence data for RANSAC.
 
@@ -58,7 +57,7 @@ def _normalize_correspondences(
 def _fit_affine_subspace(
     src_points: np.ndarray,
     dst_points: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Fit a 2D affine subspace to correspondences in 4D space.
 
@@ -133,7 +132,7 @@ def deformable_ransac_filter(
     dst_points: np.ndarray,
     threshold: float = 0.2,
     max_trials: int = 100,
-    random_seed: Optional[int] = None,
+    random_seed: int | None = None,
 ) -> np.ndarray:
     """
     Apply RANSAC filtering to remove outlier matches for deformable registration.
@@ -258,7 +257,7 @@ def _skimage_ransac_filter(
     min_samples: int,
     threshold: float,
     max_trials: int,
-    random_seed: Optional[int] = None,
+    random_seed: int | None = None,
 ) -> np.ndarray:
     """Run scikit-image's RANSAC with a parametric transform model.
 
@@ -321,7 +320,7 @@ def affine_ransac_filter(
     dst_points: np.ndarray,
     threshold: float = 5.5,
     max_trials: int = 1000,
-    random_seed: Optional[int] = None,
+    random_seed: int | None = None,
 ) -> np.ndarray:
     """Filter correspondences with a global affine model.
 
@@ -356,7 +355,7 @@ def projective_ransac_filter(
     dst_points: np.ndarray,
     threshold: float = 5.5,
     max_trials: int = 1000,
-    random_seed: Optional[int] = None,
+    random_seed: int | None = None,
 ) -> np.ndarray:
     """Filter correspondences with a global projective (homography) model.
 
@@ -389,7 +388,7 @@ def ransac_filter(
     threshold: float = 5.5,
     max_trials: int = 100,
     method: str = "deformable",
-    random_seed: Optional[int] = None,
+    random_seed: int | None = None,
 ) -> np.ndarray:
     """
     General RANSAC filtering interface.
@@ -424,4 +423,3 @@ def ransac_filter(
         )
     else:
         raise ValueError(f"Unknown RANSAC method: {method}")
-

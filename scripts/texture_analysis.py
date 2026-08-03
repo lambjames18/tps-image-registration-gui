@@ -7,9 +7,9 @@ before running:
     python scripts/texture_analysis.py
 """
 
+import matplotlib.pyplot as plt
 import numpy as np
 from scipy.ndimage import convolve
-import matplotlib.pyplot as plt
 from skimage import io
 
 
@@ -220,10 +220,13 @@ if __name__ == "__main__":
     distances = []
     for path, res, name, color, marker in data:
         im = io.imread(path, as_gray=True).astype(np.float32)
-        print(f"Loaded image {name} with shape {im.shape} and resolution {res} um/pixel")
+        print(
+            f"Loaded image {name} with shape {im.shape} and resolution {res} um/pixel"
+        )
 
         im = im[
-            im.shape[0] // 3 : im.shape[0] * 2 // 3, im.shape[1] // 3 : im.shape[1] * 2 // 3
+            im.shape[0] // 3 : im.shape[0] * 2 // 3,
+            im.shape[1] // 3 : im.shape[1] * 2 // 3,
         ]
 
         energy_maps = get_energy_maps(im, kernel_size=7)  # * int(max(all_res) / res))
@@ -260,7 +263,6 @@ if __name__ == "__main__":
         #         a.axis("off")
         # plt.tight_layout()
 
-
     ax[0].legend()
     ax[1].legend()
     plt.tight_layout()
@@ -273,7 +275,7 @@ if __name__ == "__main__":
     ax[0].set_ylabel("Euclidean Distance")
     ax[1].set_title("Texture Energy Map Distance (Std Dev)")
     ax[1].set_xlabel("Sample Name")
-    for i, (name, mean_dist, std_dist) in enumerate(distances):
+    for i, (_name, mean_dist, std_dist) in enumerate(distances):
         ax[0].bar(i, mean_dist, color=data[i][3])
         ax[1].bar(i, std_dist, color=data[i][3])
 

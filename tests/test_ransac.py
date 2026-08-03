@@ -154,9 +154,7 @@ class TestDeformableFilter:
 
         np.testing.assert_array_equal(expected, actual)
 
-    def test_tighter_threshold_keeps_fewer_points(
-        self, correspondences_with_outliers
-    ):
+    def test_tighter_threshold_keeps_fewer_points(self, correspondences_with_outliers):
         src, dst, _ = correspondences_with_outliers
         loose = deformable_ransac_filter(
             src, dst, threshold=1.0, max_trials=100, random_seed=3

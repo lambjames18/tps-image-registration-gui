@@ -94,7 +94,9 @@ def select_device(preferred: str | None = None) -> str:
     if preferred is not None:
         if _available(preferred):
             return preferred
-        logger.warning("Requested device '%s' is unavailable; autodetecting.", preferred)
+        logger.warning(
+            "Requested device '%s' is unavailable; autodetecting.", preferred
+        )
 
     for candidate in ("cuda", "mps"):
         if _available(candidate):
@@ -178,7 +180,12 @@ def get_config(checkpoint_path: str | Path | None = None) -> tuple[Any, dict]:
             "is unset; the checkpoint and config are mismatched."
         )
     if config.DATASET.NPE_NAME is not None:
-        config.LOFTR.COARSE.NPE = [832, 832, settings["imgresize"], settings["imgresize"]]
+        config.LOFTR.COARSE.NPE = [
+            832,
+            832,
+            settings["imgresize"],
+            settings["imgresize"],
+        ]
 
     config.LOFTR.MATCH_COARSE.THR = settings["thr"]
     config.ROMA.RESIZE_BY_STRETCH = settings["resize_by_stretch"]

@@ -9,11 +9,10 @@ import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Self, Tuple, Union
+from typing import Any, ClassVar, Self
 
 import h5py
 import numpy as np
-from scipy import ndimage as ndi
 from skimage import io, transform
 
 logger = logging.getLogger(__name__)
@@ -97,7 +96,7 @@ class Point:
 class PointSet:
     """Collection of control points for an image."""
 
-    points: Dict[int, List[Point]] = field(default_factory=dict)
+    points: dict[int, list[Point]] = field(default_factory=dict)
 
     def add_point(self, point: Point) -> None:
         """Add a point to the set."""
@@ -124,7 +123,7 @@ class PointSet:
         )
         return False
 
-    def get_points_array(self, slice_idx: Optional[int] = None) -> np.ndarray:
+    def get_points_array(self, slice_idx: int | None = None) -> np.ndarray:
         """Get points as numpy array for a specific slice or all slices."""
         if slice_idx is not None:
             if slice_idx not in self.points:
@@ -138,14 +137,14 @@ class PointSet:
                 all_points.append([slice_idx, point.x, point.y])
         return np.array(all_points) if all_points else np.array([])
 
-    def clear(self, slice_idx: Optional[int] = None) -> None:
+    def clear(self, slice_idx: int | None = None) -> None:
         """Clear points for a specific slice or all slices."""
         if slice_idx is not None:
             self.points.pop(slice_idx, None)
         else:
             self.points.clear()
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
             str(slice_idx): [[p.x, p.y] for p in points]
@@ -153,7 +152,7 @@ class PointSet:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict) -> "PointSet":
+    def from_dict(cls, data: dict) -> "PointSet":
         """Create PointSet from dictionary."""
         point_set = cls()
         for slice_idx, points in data.items():
@@ -166,13 +165,13 @@ class PointSet:
 class ImageData:
     """Container for image data and metadata."""
 
-    data: Dict[str, np.ndarray]
+    data: dict[str, np.ndarray]
     resolution: float
-    paths: Dict[str, Path]  # Maps modality name to file path
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    paths: dict[str, Path]  # Maps modality name to file path
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def shape(self) -> Tuple[int, ...]:
+    def shape(self) -> tuple[int, ...]:
         """Get the shape of the first data array."""
         if self.data:
             first_key = next(iter(self.data.keys()))
@@ -180,7 +179,7 @@ class ImageData:
         return (0, 0, 0)
 
     @property
-    def modalities(self) -> List[str]:
+    def modalities(self) -> list[str]:
         """Get list of available modalities."""
         return list(self.data.keys())
 
@@ -233,7 +232,7 @@ class ImageData:
 
         self.data[modality_name] = data
         self.paths[modality_name] = path
-        logger.info(f"Added modality '{modality_name}' from {path} to image data")
+        logger.info("Added modality '%s' from %s to image data", modality_name, path)
 
 
 class PointManager:
@@ -242,7 +241,7 @@ class PointManager:
     def __init__(self):
         self.source_points = PointSet()
         self.destination_points = PointSet()
-        self._history: List[Tuple[str, Any]] = []
+        self._history: list[tuple[str, Any]] = []
         self._history_index = -1
         self.max_history = 50
         logger.info("PointManager initialized")
@@ -296,20 +295,20 @@ class PointManager:
         return True
 
     def get_point_pairs(
-        self, slice_idx: Optional[int] = None
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        self, slice_idx: int | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Get corresponding point pairs as numpy arrays."""
         src_points = self.source_points.get_points_array(slice_idx)
         dst_points = self.destination_points.get_points_array(slice_idx)
         return src_points, dst_points
 
-    def clear_points(self, slice_idx: Optional[int] = None) -> None:
+    def clear_points(self, slice_idx: int | None = None) -> None:
         """Clear all points or points for a specific slice."""
         self._save_state()
         self.source_points.clear(slice_idx)
         self.destination_points.clear(slice_idx)
         logger.info(
-            f"Cleared points for slice {slice_idx if slice_idx is not None else 'all'}"
+            "Cleared points for slice %s", slice_idx if slice_idx is not None else "all"
         )
 
     def save_to_file(self, src_path: Path, dst_path: Path) -> None:
@@ -320,14 +319,16 @@ class PointManager:
 
             if src_array.size > 0:
                 np.savetxt(src_path, src_array, fmt="%d", delimiter=" ")
-                logger.info(f"Saved {len(src_array)} source points to {src_path}")
+                logger.info("Saved %s source points to %s", len(src_array), src_path)
 
             if dst_array.size > 0:
                 np.savetxt(dst_path, dst_array, fmt="%d", delimiter=" ")
-                logger.info(f"Saved {len(dst_array)} destination points to {dst_path}")
+                logger.info(
+                    "Saved %s destination points to %s", len(dst_array), dst_path
+                )
 
         except Exception as e:
-            logger.error(f"Failed to save points: {e}")
+            logger.error("Failed to save points: %s", e)
             raise
 
     def load_source_from_file(
@@ -338,9 +339,9 @@ class PointManager:
             self.source_points = self._load_points_from_file(
                 src_path, current_slice, is_2d
             )
-            logger.info(f"Loaded source points from {src_path}")
+            logger.info("Loaded source points from %s", src_path)
         except Exception as e:
-            logger.error(f"Failed to load source points: {e}")
+            logger.error("Failed to load source points: %s", e)
             raise
 
     def load_destination_from_file(
@@ -351,9 +352,9 @@ class PointManager:
             self.destination_points = self._load_points_from_file(
                 dst_path, current_slice, is_2d
             )
-            logger.info(f"Loaded destination points from {dst_path}")
+            logger.info("Loaded destination points from %s", dst_path)
         except Exception as e:
-            logger.error(f"Failed to load destination points: {e}")
+            logger.error("Failed to load destination points: %s", e)
             raise
 
     def load_from_json(self, json_data: dict) -> None:
@@ -367,7 +368,7 @@ class PointManager:
             )
             logger.info("Loaded points from JSON data")
         except Exception as e:
-            logger.error(f"Failed to load points from JSON: {e}")
+            logger.error("Failed to load points from JSON: %s", e)
             raise
 
     def _load_points_from_file(
@@ -392,7 +393,7 @@ class PointManager:
         point_set = PointSet()
 
         if not path.exists():
-            logger.warning(f"Point file does not exist: {path}")
+            logger.warning("Point file does not exist: %s", path)
             return point_set
 
         try:
@@ -408,23 +409,24 @@ class PointManager:
                 # 2D points (x, y) - apply to current slice
                 for x, y in data:
                     point_set.add_point(Point(int(x), int(y), current_slice))
-                logger.info(f"Loaded {len(data)} 2D points to slice {current_slice}")
+                logger.info("Loaded %s 2D points to slice %s", len(data), current_slice)
 
             elif data.shape[1] == 3:
                 # 3D points (slice_idx, x, y)
                 if is_2d:
                     # Ignore slice index for 2D data, add all to slice 0
-                    for slice_idx, x, y in data:
+                    for _slice_idx, x, y in data:
                         point_set.add_point(Point(int(x), int(y), 0))
                     logger.info(
-                        f"Loaded {len(data)} points to slice 0 (2D data, slice indices ignored)"
+                        "Loaded %s points to slice 0 (2D data, slice indices ignored)",
+                        len(data),
                     )
                 else:
                     # Use slice indices for 3D data
                     for slice_idx, x, y in data:
                         point_set.add_point(Point(int(x), int(y), int(slice_idx)))
                     logger.info(
-                        f"Loaded {len(data)} 3D points to their respective slices"
+                        "Loaded %s 3D points to their respective slices", len(data)
                     )
             else:
                 raise ValueError(
@@ -432,7 +434,7 @@ class PointManager:
                 )
 
         except Exception as e:
-            logger.error(f"Error reading point file {path}: {e}")
+            logger.error("Error reading point file %s: %s", path, e)
             raise
 
         return point_set
@@ -447,19 +449,19 @@ class PointManager:
                     point_set.add_point(Point(x, y, int(slice_idx)))
 
         except Exception as e:
-            logger.error(f"Error loading points from json: {e}")
+            logger.error("Error loading points from json: %s", e)
             raise
 
         return point_set
 
-    def _snapshot(self) -> Dict[str, Dict]:
+    def _snapshot(self) -> dict[str, dict]:
         """Capture the current points as a plain, copyable dict."""
         return {
             "source": self.source_points.to_dict(),
             "destination": self.destination_points.to_dict(),
         }
 
-    def _restore(self, state: Dict[str, Dict]) -> None:
+    def _restore(self, state: dict[str, dict]) -> None:
         """Replace the current points with a previously captured snapshot."""
         self.source_points = PointSet.from_dict(state["source"])
         self.destination_points = PointSet.from_dict(state["destination"])
@@ -526,7 +528,8 @@ class PointManager:
 class PointAutoIdentifier:
     """Automatically identifies corresponding control points between images."""
 
-    ENGINES = {
+    #: Maps a detection method name to the static method that implements it.
+    ENGINES: ClassVar[dict[str, str]] = {
         "sift": "detect_points_sift",
         "matchanything": "detect_points_matchanything",
     }
@@ -543,7 +546,7 @@ class PointAutoIdentifier:
         destination_image: np.ndarray,
         method: str = "sift",
         **kwargs,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Identify corresponding points between source and destination images.
 
         Args:
@@ -580,7 +583,7 @@ class PointAutoIdentifier:
     @staticmethod
     def detect_points_sift(
         source_image: np.ndarray, destination_image: np.ndarray, **kwargs
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Detect matching points between images using SIFT keypoint detector.
 
         Args:
@@ -594,8 +597,8 @@ class PointAutoIdentifier:
             Tuple of numpy arrays: (source_points, destination_points)
         """
         from skimage.feature import SIFT, match_descriptors
-        from skimage.transform import AffineTransform
         from skimage.filters import gaussian
+
         from tpsreg.ransac import ransac_filter as ransac
 
         # Get parameters
@@ -641,12 +644,14 @@ class PointAutoIdentifier:
             keypoints_dst = sift_detector.keypoints
             descriptors_dst = sift_detector.descriptors
 
-            logger.info(f"Detected {len(keypoints_src)} keypoints in source image")
-            logger.info(f"Detected {len(keypoints_dst)} keypoints in destination image")
+            logger.info("Detected %s keypoints in source image", len(keypoints_src))
+            logger.info(
+                "Detected %s keypoints in destination image", len(keypoints_dst)
+            )
 
             if len(keypoints_src) < min_matches or len(keypoints_dst) < min_matches:
                 logger.warning(
-                    f"Insufficient keypoints detected (need at least {min_matches})"
+                    "Insufficient keypoints detected (need at least %s)", min_matches
                 )
                 return np.array([]), np.array([])
 
@@ -655,11 +660,11 @@ class PointAutoIdentifier:
                 descriptors_src, descriptors_dst, max_ratio=max_ratio, cross_check=True
             )
 
-            logger.info(f"Found {len(matches)} initial matches")
+            logger.info("Found %s initial matches", len(matches))
 
             if len(matches) < min_matches:
                 logger.warning(
-                    f"Insufficient matches found (need at least {min_matches})"
+                    "Insufficient matches found (need at least %s)", min_matches
                 )
                 return np.array([]), np.array([])
 
@@ -680,14 +685,17 @@ class PointAutoIdentifier:
                 src_points = src_points[inliers]
                 dst_points = dst_points[inliers]
 
-                logger.info(f"After RANSAC filtering: {len(src_points)} inlier matches")
+                logger.info(
+                    "After RANSAC filtering: %s inlier matches", len(src_points)
+                )
 
             except Exception as e:
-                logger.warning(f"RANSAC filtering failed: {e}, using all matches")
+                logger.warning("RANSAC filtering failed: %s, using all matches", e)
 
             if len(src_points) < min_matches:
                 logger.warning(
-                    f"Insufficient inlier matches after RANSAC (need at least {min_matches})"
+                    "Insufficient inlier matches after RANSAC (need at least %s)",
+                    min_matches,
                 )
                 return np.array([]), np.array([])
 
@@ -706,21 +714,21 @@ class PointAutoIdentifier:
                 top_indices = sorted_indices[:num_samples]
                 src_points = src_points[top_indices]
                 dst_points = dst_points[top_indices]
-                logger.info(f"Selected top {num_samples} matches based on distance")
+                logger.info("Selected top %s matches based on distance", num_samples)
 
             return src_points.astype(int), dst_points.astype(int)
 
         except Exception as e:
-            logger.error(f"SIFT point detection failed: {e}")
+            logger.error("SIFT point detection failed: %s", e)
             return np.array([]), np.array([])
 
     @staticmethod
     def detect_points_matchanything(
         source_image: np.ndarray,
         destination_image: np.ndarray,
-        checkpoint_path: str = None,
+        checkpoint_path: str | None = None,
         **kwargs,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Detect matching points between images using ROMA (MatchAnything).
 
         Args:
@@ -748,12 +756,14 @@ class PointAutoIdentifier:
                 PointAutoIdentifier._matchanything_matcher = create_matcher(
                     checkpoint_path=checkpoint_path
                 )
-            
+
             num_samples = kwargs.get("num_samples", 10)
-            PointAutoIdentifier._matchanything_matcher.config["sample"] = {"n_sample": num_samples}
+            PointAutoIdentifier._matchanything_matcher.config["sample"] = {
+                "n_sample": num_samples
+            }
             matcher = PointAutoIdentifier._matchanything_matcher
 
-            src_points, dst_points, confidences = apply_matcher(
+            src_points, dst_points, _confidences = apply_matcher(
                 matcher,
                 source_image,
                 destination_image,
@@ -763,14 +773,13 @@ class PointAutoIdentifier:
                 ransac_max_trials=kwargs.get("ransac_max_trials", 100),
             )
 
-            logger.info(f"ROMA detected {len(src_points)} matches")
+            logger.info("ROMA detected %s matches", len(src_points))
 
             if len(src_points) < 4:
                 logger.warning(
                     "Insufficient matches found (< 4). Cannot estimate transformation."
                 )
                 return np.array([]), np.array([])
-
 
             # Take the top N matches based on confidence
             """
@@ -835,26 +844,25 @@ class PointAutoIdentifier:
                         dst_points = dst_points[:num_samples]
                         confidences = confidences[:num_samples]
 
-                logger.info(
-                    f"Selected top {num_samples} matches (min confidence: {confidences[-1]:.4f})"
-                )
+                logger.info("Selected top %s matches (min confidence: %.4f)", num_samples, confidences[-1])
             """
 
             return src_points.astype(int), dst_points.astype(int)
 
         except ImportError as e:
             logger.error(
-                f"Failed to import ROMA matcher. Make sure roma_matcher.py is available: {e}"
+                "Failed to import ROMA matcher. Make sure roma_matcher.py is available: %s",
+                e,
             )
             return np.array([]), np.array([])
         except FileNotFoundError as e:
-            logger.error(f"ROMA checkpoint not found: {e}")
+            logger.error("ROMA checkpoint not found: %s", e)
             logger.error(
                 "Please download weights from: https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view"
             )
             return np.array([]), np.array([])
         except Exception as e:
-            logger.error(f"Matchanything point detection failed: {e}")
+            logger.error("Matchanything point detection failed: %s", e)
             import traceback
 
             logger.error(traceback.format_exc())
@@ -866,13 +874,13 @@ class PointAutoIdentifier:
         cls.checkpoint_path = path
         # Clear cached matcher to reload with new checkpoint
         cls._matchanything_matcher = None
-        logger.info(f"Set MatchAnything checkpoint path to: {path}")
+        logger.info("Set MatchAnything checkpoint path to: %s", path)
 
 
 class ImageLoader:
     """Handles loading and preprocessing of various image formats."""
 
-    SUPPORTED_FORMATS = {
+    SUPPORTED_FORMATS: ClassVar[dict[str, str]] = {
         ".ang": "load_ang",
         ".h5": "load_h5",
         ".dream3d": "load_dream3d",
@@ -886,9 +894,9 @@ class ImageLoader:
     @classmethod
     def load(
         cls,
-        path: Union[str, Path, List, Tuple],
+        path: str | Path | list | tuple,
         resolution: float = 1.0,
-        modality_name: str = None,
+        modality_name: str | None = None,
     ) -> ImageData:
         """Load image data from file."""
         is_list = type(path) in [list, tuple]
@@ -923,13 +931,13 @@ class ImageLoader:
                 suffix = _p.suffix.lower()
                 if suffix != first_suffix:
                     raise ValueError(
-                        f"When prividing a list of images, all images must have the same extension"
+                        "When prividing a list of images, all images must have the same extension"
                     )
 
                 path[i] = _p
 
         try:
-            logger.info(f"Loading {suffix} file(s)")
+            logger.info("Loading %s file(s)", suffix)
 
             # Call the appropriate loader method
             data, res, metadata = loader_method(path, modality_name)
@@ -963,13 +971,13 @@ class ImageLoader:
             return ImageData(data=data, resolution=res, paths=paths, metadata=metadata)
 
         except Exception as e:
-            logger.error(f"Failed to load {path}: {e}")
+            logger.error("Failed to load %s: %s", path, e)
             raise
 
     @staticmethod
     def load_ang(
-        path: Path, modality_name: str = None
-    ) -> Tuple[Dict[str, np.ndarray], float, Dict[str, Any]]:
+        path: Path, modality_name: str | None = None
+    ) -> tuple[dict[str, np.ndarray], float, dict[str, Any]]:
         """Load ANG file format."""
         col_names = None
         header = ""
@@ -977,7 +985,7 @@ class ImageLoader:
         ncols = nrows = 0
         res = 1.0
 
-        with open(path, "r") as f:
+        with open(path) as f:
             for line in f:
                 header += line
                 if "NCOLS_ODD" in line:
@@ -1002,7 +1010,7 @@ class ImageLoader:
 
         if raw_data.shape[0] != ncols * nrows:
             raise ValueError(
-                f"Data size mismatch: expected {ncols*nrows}, got {raw_data.shape[0]}"
+                f"Data size mismatch: expected {ncols * nrows}, got {raw_data.shape[0]}"
             )
 
         n_entries = raw_data.shape[-1]
@@ -1012,7 +1020,7 @@ class ImageLoader:
         for i, name in enumerate(col_names[:n_entries]):
             arr = data[:, :, i]
             arr = np.fliplr(np.rot90(arr, k=3)).T
-            out[name] = arr.reshape((1,) + arr.shape + (1,))
+            out[name] = arr.reshape((1, *arr.shape, 1))
 
         # Create Euler angles array
         if all(k in out for k in ["phi1", "PHI", "phi2"]):
@@ -1025,14 +1033,14 @@ class ImageLoader:
 
     @staticmethod
     def load_h5(
-        path: Path, modality_name: str = None
-    ) -> Tuple[Dict[str, np.ndarray], float, Dict[str, Any]]:
+        path: Path, modality_name: str | None = None
+    ) -> tuple[dict[str, np.ndarray], float, dict[str, Any]]:
         """Load H5 file format."""
         with h5py.File(path, "r") as h5:
             # Find the EBSD data entry
-            if "1" in h5.keys():
+            if "1" in h5:
                 entry = "1"
-            elif "Scan 1" in h5.keys():
+            elif "Scan 1" in h5:
                 entry = "Scan 1"
             else:
                 raise ValueError("Could not find EBSD data in the H5 file")
@@ -1044,9 +1052,9 @@ class ImageLoader:
 
             keys = list(ebsd_data.keys())
             data = {
-                key.upper()
-                .replace(" ", "-"): ebsd_data[key][...]
-                .reshape(1, nrows, ncols, -1)
+                key.upper().replace(" ", "-"): ebsd_data[key][...].reshape(
+                    1, nrows, ncols, -1
+                )
                 for key in keys
             }
 
@@ -1061,16 +1069,16 @@ class ImageLoader:
 
     @staticmethod
     def load_dream3d(
-        path: Path, modality_name: str = None
-    ) -> Tuple[Dict[str, np.ndarray], float, Dict[str, Any]]:
+        path: Path, modality_name: str | None = None
+    ) -> tuple[dict[str, np.ndarray], float, dict[str, Any]]:
         """Load DREAM3D file format."""
         with h5py.File(path, "r") as h5:
-            if "DataStructure" in h5.keys():
+            if "DataStructure" in h5:
                 ebsd_data = h5["DataStructure/DataContainer/CellData"]
                 res = np.asarray(
                     h5["DataStructure/DataContainer"].attrs.get("_SPACING")
                 )[1]
-            elif "DataContainers" in h5.keys():
+            elif "DataContainers" in h5:
                 ebsd_data = h5["DataContainers/ImageDataContainer/CellData"]
                 res = h5["DataContainers/ImageDataContainer/_SIMPL_GEOMETRY/SPACING"][
                     ...
@@ -1087,7 +1095,7 @@ class ImageLoader:
     @staticmethod
     def load_image(
         path: Path, modality_name: str = "Intensity"
-    ) -> Tuple[Dict[str, np.ndarray], None]:
+    ) -> tuple[dict[str, np.ndarray], None]:
         """Load standard image formats with optional modality name."""
         im = io.imread(path, as_gray=True).astype(np.float32)
 
@@ -1098,7 +1106,7 @@ class ImageLoader:
         if im.ndim == 2:
             im = im.reshape((im.shape[0], im.shape[1], 1))
 
-        im = im.reshape((1,) + im.shape)
+        im = im.reshape((1, *im.shape))
 
         metadata = {"dataformat": DataFormat.IMAGE.value}
         return {modality_name: im}, None, metadata
@@ -1106,7 +1114,7 @@ class ImageLoader:
     @staticmethod
     def load_images(
         paths: list, modality_name: str = "Intensity"
-    ) -> Tuple[Dict[str, np.ndarray], None, Dict[str, Any]]:
+    ) -> tuple[dict[str, np.ndarray], None, dict[str, Any]]:
         """Load a list of standard image formats."""
         images = np.array(
             [
@@ -1117,7 +1125,7 @@ class ImageLoader:
 
         # Put in a channel axis if needed
         if images.ndim == 3:
-            images = images.reshape(images.shape + (1,))
+            images = images.reshape((*images.shape, 1))
 
         # Normalize to 0-255 range
         # mn = np.min(images, axis=(1, 2, 3), keepdims=True)
@@ -1133,7 +1141,7 @@ class ImageLoader:
 class ImageWriter:
     """Handles saving images to disk."""
 
-    SUPPORTED_FORMATS = {
+    SUPPORTED_FORMATS: ClassVar[dict[str, str]] = {
         ".ang": "save_ang",
         ".h5": "save_h5",
         ".dream3d": "save_dream3d",
@@ -1147,7 +1155,7 @@ class ImageWriter:
     @classmethod
     def save(
         cls,
-        image_data: Union[np.ndarray, Dict[str, np.ndarray]],
+        image_data: np.ndarray | dict[str, np.ndarray],
         path: Path,
         *args,
         **kwargs,
@@ -1163,7 +1171,7 @@ class ImageWriter:
                 raise ValueError(f"Unsupported file format: {ext}")
 
         except Exception as e:
-            logger.error(f"Failed to save image to {path}: {e}")
+            logger.error("Failed to save image to %s: %s", path, e)
             raise
 
     @staticmethod
@@ -1171,16 +1179,16 @@ class ImageWriter:
         """Save image to file."""
         try:
             io.imsave(path, image_data)
-            logger.info(f"Saved image to {path}")
+            logger.info("Saved image to %s", path)
         except Exception as e:
-            logger.error(f"Failed to save image to {path}: {e}")
+            logger.error("Failed to save image to %s: %s", path, e)
             raise
 
     @staticmethod
     def save_dream3d(
-        image_data: Dict[str, np.ndarray],
-        path: Union[str, Path],
-        original_path: Union[str, Path],
+        image_data: dict[str, np.ndarray],
+        path: str | Path,
+        original_path: str | Path,
     ) -> None:
         """Save image data to DREAM3D format."""
         # Ensure paths are Path objects
@@ -1210,7 +1218,7 @@ class ImageWriter:
         # Replace the Dream3D file name in the XDMF file
         def replace_dream3d_filename_in_xdmf(xdmf_path, new_dream3d_filename):
             """Replaces the DREAM3D filename in the XDMF file with a new filename."""
-            with open(xdmf_path, "r") as file:
+            with open(xdmf_path) as file:
                 xdmf_content = file.readlines()
 
             with open(xdmf_path, "w") as file:
@@ -1273,7 +1281,7 @@ class ImageWriter:
             dset = h5group.create_dataset(name, data=data, dtype=dtype)
             dset.attrs["ComponentDimensions"] = np.uint64([data.shape[-1]])
             dset.attrs["Tuple Axis Dimensions"] = np.bytes_(
-                f"x={str(data.shape[2])},y={str(data.shape[1])},z={str(data.shape[0])} "
+                f"x={data.shape[2]!s},y={data.shape[1]!s},z={data.shape[0]!s} "
             )
             dset.attrs["DataArrayVersion"] = np.int32([2])
             dset.attrs["ObjectType"] = np.bytes_(dream3d_dtypes[dtype])
@@ -1284,7 +1292,7 @@ class ImageWriter:
         def add_dataset_to_xdmf(xdmf_path, dataset_name, data_array):
             """Adds a new dataset to an existing XDMF file."""
             # Read the existing XDMF file
-            with open(xdmf_path, "r") as file:
+            with open(xdmf_path) as file:
                 xdmf_content = file.readlines()
 
             # Break the xdmf content into lines for easier manipulation
@@ -1292,7 +1300,7 @@ class ImageWriter:
 
             # Make sure the shape of the data_array is compatible
             if data_array.ndim == 3:
-                data_array = data_array.reshape(data_array.shape + (1,))
+                data_array = data_array.reshape((*data_array.shape, 1))
             elif data_array.ndim < 3:
                 raise ValueError("data_array must be at least 3-dimensional")
             elif data_array.ndim > 4:
@@ -1379,14 +1387,14 @@ class ImageWriter:
                     dataset[...] = data
                 else:
                     # Create new dataset
-                    logger.info(f"Creating new dataset for modality '{modality}'")
+                    logger.info("Creating new dataset for modality '%s'", modality)
                     # Add dataset to H5 and XDMF
                     add_dataset_to_h5(cell_data, modality, data)
                     add_dataset_to_xdmf(xdmf_path, modality, data)
 
     @staticmethod
     def save_ang(
-        image_data: Dict[str, np.ndarray],
+        image_data: dict[str, np.ndarray],
         path: Path,
         ang_header: str,
         resolution: float,
@@ -1404,7 +1412,7 @@ class ImageWriter:
 
         col_names = list(image_data.keys())
         data_out = []
-        for i, key in enumerate(col_names):
+        for _i, key in enumerate(col_names):
             data_out.append(image_data[key].reshape(-1, 1).astype(np.float32))
         data_out = np.hstack(data_out)
         np.savetxt(
@@ -1418,7 +1426,7 @@ class ImageWriter:
 
     @staticmethod
     def save_h5(
-        image_data: Dict[str, np.ndarray], path: Path, resolution: float
+        image_data: dict[str, np.ndarray], path: Path, resolution: float
     ) -> None:
         """Save image data to HDF5 format."""
         raise NotImplementedError("Saving to HDF5 format is not yet implemented.")
@@ -1450,7 +1458,7 @@ class TransformManager:
         src_points: np.ndarray,
         dst_points: np.ndarray,
         transform_type: TransformType,
-        output_shape: Tuple[int, int],
+        output_shape: tuple[int, int],
     ) -> Any:
         """Estimate transformation parameters from point correspondences."""
         self._check_valid_points(src_points, dst_points)
@@ -1468,11 +1476,11 @@ class TransformManager:
             )
 
             self._last_transform = tform
-            logger.debug(f"Estimated {transform_type.value} transform")
+            logger.debug("Estimated %s transform", transform_type.value)
             return tform
 
         except Exception as e:
-            logger.error(f"Failed to estimate transform: {e}")
+            logger.error("Failed to estimate transform: %s", e)
             raise
 
     def estimate_transform_stack(
@@ -1480,9 +1488,9 @@ class TransformManager:
         src_points: np.ndarray,
         dst_points: np.ndarray,
         transform_type: TransformType,
-        output_shape: Tuple[int, int],
-        n_slices: Optional[int] = None,
-    ) -> Dict[int, Any]:
+        output_shape: tuple[int, int],
+        n_slices: int | None = None,
+    ) -> dict[int, Any]:
         """Estimate transformations for every slice of a stack.
 
         Slices without control points get parameters linearly interpolated from
@@ -1551,14 +1559,14 @@ class TransformManager:
                 elif upper_slices:
                     transforms[i] = transforms[min(upper_slices)]
 
-        logger.info(f"Estimated transforms for {len(transforms)} slices in the stack")
+        logger.info("Estimated transforms for %s slices in the stack", len(transforms))
         return transforms
 
     def apply_transform(
         self,
         image: np.ndarray,
         tform: Any,
-        output_shape: Optional[Tuple[int, int]] = None,
+        output_shape: tuple[int, int] | None = None,
         order: int = 0,
     ) -> np.ndarray:
         """Apply transformation to an image."""
@@ -1575,11 +1583,11 @@ class TransformManager:
                 order=order,
             )
 
-            logger.debug(f"Applied transform to image of shape {image.shape}")
+            logger.debug("Applied transform to image of shape %s", image.shape)
             return warped
 
         except Exception as e:
-            logger.error(f"Failed to apply transform: {e}")
+            logger.error("Failed to apply transform: %s", e)
             raise
 
     def apply_transform_stack(
@@ -1588,13 +1596,12 @@ class TransformManager:
         src_points: np.ndarray = None,
         dst_points: np.ndarray = None,
         transform_type: TransformType = TransformType.TPS,
-        output_shape: Optional[Tuple[int, int]] = None,
+        output_shape: tuple[int, int] | None = None,
         order: int = 0,
-        transforms: Optional[Dict[int, Any]] = None,
+        transforms: dict[int, Any] | None = None,
         return_transforms: bool = False,
     ) -> np.ndarray:
         """Apply transformation to a stack of images with interpolation between slices."""
-        from tpsreg.tps import ThinPlateSplineTransform
 
         if output_shape is None:
             output_shape = image_stack.shape[1:3]
@@ -1630,7 +1637,7 @@ class TransformManager:
                 image_stack[i], tform, output_shape, order
             )
 
-        logger.info(f"Applied transform to stack of {image_stack.shape[0]} images")
+        logger.info("Applied transform to stack of %s images", image_stack.shape[0])
         if return_transforms:
             return output_stack, transforms
         return output_stack
@@ -1651,10 +1658,10 @@ class TransformManager:
             else:
                 raise ValueError(f"Unsupported export format: {format}")
 
-            logger.info(f"Exported transform to {path}")
+            logger.info("Exported transform to %s", path)
 
         except Exception as e:
-            logger.error(f"Failed to export transform: {e}")
+            logger.error("Failed to export transform: %s", e)
             raise
 
 
@@ -1670,7 +1677,7 @@ class ImageProcessor:
     def apply_clahe(
         image: np.ndarray,
         clip_limit: float = 20.0,
-        kernel_size: Tuple[int, int] = (8, 8),
+        kernel_size: tuple[int, int] = (8, 8),
     ) -> np.ndarray:
         """Apply CLAHE (Contrast Limited Adaptive Histogram Equalization).
 
@@ -1707,7 +1714,7 @@ class ImageProcessor:
         torch,
         image: np.ndarray,
         clip_limit: float,
-        kernel_size: Tuple[int, int],
+        kernel_size: tuple[int, int],
     ) -> np.ndarray:
         """Kornia-backed CLAHE. Raises ImportError when kornia is missing."""
         from kornia.enhance import equalize_clahe
@@ -1746,7 +1753,7 @@ class ImageProcessor:
     def _apply_clahe_skimage(
         image: np.ndarray,
         clip_limit: float,
-        kernel_size: Tuple[int, int],
+        kernel_size: tuple[int, int],
     ) -> np.ndarray:
         """Pure scikit-image CLAHE, applied plane by plane."""
         from skimage.exposure import equalize_adapthist
@@ -1781,7 +1788,9 @@ class ImageProcessor:
             out = equalize_adapthist(
                 scaled, kernel_size=kernel_size, clip_limit=skimage_clip
             )
-            equalized.append(np.round(255 * _rescale_unit_interval(out)).astype(np.uint8))
+            equalized.append(
+                np.round(255 * _rescale_unit_interval(out)).astype(np.uint8)
+            )
 
         result = np.stack(equalized, axis=0)
         logger.debug("Applied CLAHE (skimage) with clip_limit=%s", clip_limit)
@@ -1915,7 +1924,7 @@ class ProjectManager:
     """Manages project state and serialization."""
 
     def __init__(self):
-        self.project_path: Optional[Path] = None
+        self.project_path: Path | None = None
         self.is_modified = False
         self.metadata = {"version": "2.0", "created": None, "modified": None}
         logger.info("ProjectManager initialized")
@@ -1934,7 +1943,7 @@ class ProjectManager:
         self,
         path: Path,
         point_manager: PointManager,
-        settings: Dict[str, Any],
+        settings: dict[str, Any],
     ) -> None:
         """Save complete project state."""
         try:
@@ -1950,24 +1959,24 @@ class ProjectManager:
 
             self.project_path = path
             self.is_modified = False
-            logger.info(f"Saved project to {path}")
+            logger.info("Saved project to %s", path)
 
         except Exception as e:
-            logger.error(f"Failed to save project: {e}")
+            logger.error("Failed to save project: %s", e)
             raise
 
-    def load_project(self, path: Path) -> Dict[str, Any]:
+    def load_project(self, path: Path) -> dict[str, Any]:
         """Load project state from file."""
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 project_data = json.load(f)
 
             self.project_path = path
             self.is_modified = False
-            logger.info(f"Loaded project from {path}")
+            logger.info("Loaded project from %s", path)
 
             return project_data
 
         except Exception as e:
-            logger.error(f"Failed to load project: {e}")
+            logger.error("Failed to load project: %s", e)
             raise

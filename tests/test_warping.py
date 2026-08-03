@@ -154,9 +154,7 @@ class TestTransformImageStack:
             ]
         )
 
-        _, params = transform_image_stack(
-            stack, srcs, dsts, return_params=True
-        )
+        _, params = transform_image_stack(stack, srcs, dsts, return_params=True)
 
         # Slice 2 sits halfway between the two keyed slices.
         midpoint = (params[0] + params[4]) / 2

@@ -456,9 +456,7 @@ class TestTransformManager:
     def test_point_count_mismatch_rejected(self, points):
         manager = TransformManager()
         with pytest.raises(ValueError, match="mismatch"):
-            manager.estimate_transform(
-                points, points[:-1], TransformType.TPS, (64, 64)
-            )
+            manager.estimate_transform(points, points[:-1], TransformType.TPS, (64, 64))
 
     def test_estimate_returns_usable_transform(self, points):
         manager = TransformManager()

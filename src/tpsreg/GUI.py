@@ -13,7 +13,6 @@ from abc import ABC, abstractmethod
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image, ImageTk
@@ -663,9 +662,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
         )
 
-        if src_path:
-            if self.presenter.load_source_points(Path(src_path)):
-                self.set_status("Source points loaded successfully")
+        if src_path and self.presenter.load_source_points(Path(src_path)):
+            self.set_status("Source points loaded successfully")
 
     def _on_load_destination_points(self):
         """Handle loading destination control points."""
@@ -674,9 +672,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
         )
 
-        if dst_path:
-            if self.presenter.load_destination_points(Path(dst_path)):
-                self.set_status("Destination points loaded successfully")
+        if dst_path and self.presenter.load_destination_points(Path(dst_path)):
+            self.set_status("Destination points loaded successfully")
 
     def _on_save_points(self):
         """Handle saving control points."""
@@ -718,10 +715,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             filetypes=[("Project Files", "*.json"), ("All Files", "*.*")],
         )
 
-        if file_path:
-            if self.presenter.save_project(Path(file_path)):
-                self.set_status(f"Project saved as {Path(file_path).name}")
-                self.title(f"Multimodal Data Alignment Tool - {Path(file_path).name}")
+        if file_path and self.presenter.save_project(Path(file_path)):
+            self.set_status(f"Project saved as {Path(file_path).name}")
+            self.title(f"Multimodal Data Alignment Tool - {Path(file_path).name}")
 
     def _on_export_transform(self):
         """Handle exporting transformation."""
@@ -741,9 +737,10 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             ],
         )
 
-        if file_path:
-            if self.presenter.export_transform(Path(file_path), transform_type):
-                self.set_status("Transform exported successfully")
+        if file_path and self.presenter.export_transform(
+            Path(file_path), transform_type
+        ):
+            self.set_status("Transform exported successfully")
 
     def _on_export_corrected(self):
         """Handle exporting corrected image."""
@@ -875,7 +872,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         if tag == "":
             return
         self.presenter.remove_point(int(tag))
-        logger.debug(f"Removed point with index {int(tag)}")
+        logger.debug("Removed point with index %s", int(tag))
         self.set_status(f"Removed point pair {int(tag)}")
 
     def _on_canvas_motion(self, event, canvas_type):
@@ -1415,7 +1412,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         else:
             self.progress_bar.stop()
 
-    def _get_image_resolutions_dialog(self) -> Tuple:
+    def _get_image_resolutions_dialog(self) -> tuple:
         """Show dialog to select transformation type."""
         dialog = tk.Toplevel(self)
         dialog.title("Enter Resolution (µm)")
@@ -1460,7 +1457,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0], result[1]
 
-    def _get_transform_type_dialog(self) -> Optional[TransformType]:
+    def _get_transform_type_dialog(self) -> TransformType | None:
         """Show dialog to select transformation type."""
         dialog = tk.Toplevel(self)
         dialog.title("Select Transform Type")
@@ -1502,7 +1499,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0]
 
-    def _get_crop_mode_dialog(self) -> Optional[CropMode]:
+    def _get_crop_mode_dialog(self) -> CropMode | None:
         """Show dialog to select crop mode."""
         dialog = tk.Toplevel(self)
         dialog.title("Select Crop Mode")
@@ -1553,7 +1550,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0]
 
-    def _get_export_format_dialog(self) -> Optional[DataFormat]:
+    def _get_export_format_dialog(self) -> DataFormat | None:
         """Show dialog to select export format."""
         dialog = tk.Toplevel(self)
         dialog.title("Select Export Format")
@@ -1596,7 +1593,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0]
 
-    def _get_modality_name_dialog(self, filename: str) -> Optional[str]:
+    def _get_modality_name_dialog(self, filename: str) -> str | None:
         """Show dialog to enter a modality name for an image."""
         dialog = tk.Toplevel(self)
         dialog.title(f"Loading {filename}")
@@ -1611,7 +1608,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
         # Label
         ttk.Label(
-            main_frame, text=f"Enter a name for this image modality:", wraplength=300
+            main_frame, text="Enter a name for this image modality:", wraplength=300
         ).pack(pady=(0, 10))
 
         # Entry field
@@ -1650,7 +1647,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0]
 
-    def _get_point_clear_dialog(self) -> Optional[str]:
+    def _get_point_clear_dialog(self) -> str | None:
         """Show dialog to choose point clearing option."""
         dialog = tk.Toplevel(self)
         dialog.title("Clear Points")
@@ -1702,7 +1699,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0]
 
-    def _get_auto_detect_params_dialog(self, method: str) -> Optional[Dict]:
+    def _get_auto_detect_params_dialog(self, method: str) -> dict | None:
         """Show dialog to configure auto point detection parameters.
 
         Args:
@@ -1722,7 +1719,6 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         main_frame.pack(fill="both", expand=True)
 
         # Parameter variables
-        params = {}
         entries = {}
 
         if method == "sift":
@@ -1774,7 +1770,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         ransac_filter_var = tk.BooleanVar(value=True)
 
         # Create parameter entries
-        for i, (key, label, default, tooltip) in enumerate(param_defs):
+        for _i, (key, label, default, tooltip) in enumerate(param_defs):
             row_frame = ttk.Frame(main_frame)
             row_frame.pack(fill="x", pady=3)
 
@@ -2715,7 +2711,7 @@ def log_file_path() -> Path:
 
 def setup_logging(level: int = logging.INFO) -> None:
     """Configure application logging to the console and a rotating log file."""
-    handlers: List[logging.Handler] = [logging.StreamHandler()]
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
 
     log_path = log_file_path()
     try:

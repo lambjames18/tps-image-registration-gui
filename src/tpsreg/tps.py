@@ -8,7 +8,7 @@ grid, which makes it directly usable as the ``inverse_map`` callable expected by
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional, Tuple
+from collections.abc import Callable
 
 import numpy as np
 from scipy.spatial.distance import cdist
@@ -42,12 +42,12 @@ class ThinPlateSplineTransform:
     def __init__(
         self,
         affine_only: bool = False,
-        chunk_size: Optional[int] = None,
+        chunk_size: int | None = None,
         dtype: type = np.float32,
     ):
         self._estimated = False
-        self.params: Optional[np.ndarray] = None
-        self.size: Optional[Tuple[int, int]] = None
+        self.params: np.ndarray | None = None
+        self.size: tuple[int, int] | None = None
         self.affine_only = affine_only
         self.chunk_size = chunk_size
         self.dtype = dtype
@@ -164,9 +164,9 @@ class ThinPlateSplineTransform:
         self,
         src: np.ndarray,
         dst: np.ndarray,
-        size: Tuple[int, int],
+        size: tuple[int, int],
         available_memory_gb: float = 2.0,
-        progress_callback: Optional[Callable[[int, int], None]] = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> bool:
         """Estimate the spline mapping between source and destination points.
 

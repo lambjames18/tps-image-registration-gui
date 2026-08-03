@@ -61,7 +61,9 @@ class TestLoading:
         assert presenter.load_destination_image(dst_path, modality_name="SE") is True
         assert "SE" in presenter.destination_image.modalities
 
-    def test_missing_file_reports_error_without_raising(self, presenter, fake_view, tmp_path):
+    def test_missing_file_reports_error_without_raising(
+        self, presenter, fake_view, tmp_path
+    ):
         assert presenter.load_source_image(tmp_path / "nope.tif") is False
         assert fake_view.errors, "the view should have been told about the failure"
 
@@ -218,7 +220,7 @@ class TestTransforms:
 
     def test_transform_with_points_produces_a_warp(self, loaded):
         self._add_grid(loaded)
-        warped, src_img, dst_img = loaded.apply_transform(
+        warped, _src_img, dst_img = loaded.apply_transform(
             TransformType.TPS, return_data=True
         )
         assert warped.shape[:2] == dst_img.shape[:2]

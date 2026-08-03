@@ -8,7 +8,7 @@ deformable spline and a rigid model by changing a string.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional, Tuple
+from typing import Any
 
 import numpy as np
 from skimage import transform as tf
@@ -73,7 +73,7 @@ def transform_coords(
     return_params: bool = False,
     *args,
     **kwargs,
-) -> np.ndarray | Tuple[np.ndarray, np.ndarray]:
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Transform coordinates from source to destination.
 
     Parameters
@@ -105,13 +105,13 @@ def transform_image(
     image: np.ndarray,
     src: np.ndarray,
     dst: np.ndarray,
-    output_shape: Optional[Tuple[int, int]] = None,
+    output_shape: tuple[int, int] | None = None,
     mode: str = "tps",
     order: int = 0,
     return_params: bool = False,
     *args,
     **kwargs,
-) -> np.ndarray | Tuple[np.ndarray, np.ndarray]:
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Warp a single image using a transform fitted to point correspondences.
 
     Parameters
@@ -155,14 +155,14 @@ def transform_image_stack(
     images: np.ndarray,
     srcs: np.ndarray,
     dsts: np.ndarray,
-    output_shape: Optional[Tuple[int, int]] = None,
+    output_shape: tuple[int, int] | None = None,
     mode: str = "tps",
     order: int = 0,
-    params: Optional[np.ndarray] = None,
+    params: np.ndarray | None = None,
     return_params: bool = False,
     *args,
     **kwargs,
-) -> np.ndarray | Tuple[np.ndarray, np.ndarray]:
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
     """Warp a stack of images, interpolating parameters between keyed slices.
 
     Control points are only needed on some slices. Parameters are fitted on
@@ -212,20 +212,22 @@ def transform_image_stack(
         # Interpolation needs the first and last slice to be keyed. Users should
         # place points there; duplicate the nearest keyed slice when they don't.
         if slice_numbers[0] not in slice_numbers_with_points:
-            logger.info("First slice has no points; extending from slice %d",
-                        slice_numbers_with_points[0])
+            logger.info(
+                "First slice has no points; extending from slice %d",
+                slice_numbers_with_points[0],
+            )
             src_temp = srcs[srcs[:, 0] == slice_numbers_with_points[0], 1:]
             dst_temp = dsts[dsts[:, 0] == slice_numbers_with_points[0], 1:]
             pad = np.zeros((src_temp.shape[0], 1))
             srcs = np.concatenate([np.concatenate([pad, src_temp], axis=1), srcs])
             dsts = np.concatenate([np.concatenate([pad, dst_temp], axis=1), dsts])
-            slice_numbers_with_points = np.concatenate(
-                [[0], slice_numbers_with_points]
-            )
+            slice_numbers_with_points = np.concatenate([[0], slice_numbers_with_points])
 
         if slice_numbers[-1] not in slice_numbers_with_points:
-            logger.info("Last slice has no points; extending from slice %d",
-                        slice_numbers_with_points[-1])
+            logger.info(
+                "Last slice has no points; extending from slice %d",
+                slice_numbers_with_points[-1],
+            )
             src_temp = srcs[srcs[:, 0] == slice_numbers_with_points[-1], 1:]
             dst_temp = dsts[dsts[:, 0] == slice_numbers_with_points[-1], 1:]
             pad = np.full((src_temp.shape[0], 1), slice_numbers[-1])
