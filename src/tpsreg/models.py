@@ -760,6 +760,9 @@ class PointAutoIdentifier:
             logger.error(
                 "Please download weights from: https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view"
             )
+            import traceback
+
+            logger.error(traceback.format_exc())
             return np.array([]), np.array([])
         except Exception as e:
             logger.error(f"Matchanything point detection failed: {e}")
@@ -997,7 +1000,8 @@ class ImageLoader:
         path: Path, modality_name: str = "Intensity"
     ) -> Tuple[Dict[str, np.ndarray], None]:
         """Load standard image formats with optional modality name."""
-        im = io.imread(path, as_gray=True).astype(np.float32)
+        im = io.imread(path).astype(np.float32)
+        # im = io.imread(path, as_gray=True).astype(np.float32)
 
         # Normalize to 0-255 range
         im = np.around((im - np.min(im)) / (np.max(im) - np.min(im)) * 255, 0)

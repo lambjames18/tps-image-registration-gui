@@ -1015,7 +1015,7 @@ class ApplicationPresenter:
 
             # Estimate transform
             tform = self.transform_manager.estimate_transform(
-                src_points, dst_points, transform_type, size=output_shape
+                src_points, dst_points, transform_type, output_shape
             )
 
             # Export

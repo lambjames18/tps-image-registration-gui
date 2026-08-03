@@ -60,7 +60,7 @@ def _prepare_image(im: np.ndarray) -> torch.Tensor:
 def get_config(checkpoint_path: str = None) -> Tuple[object, dict]:
     cfg = {
         "eval_dataset": True,
-        "main_cfg_path": "Matchanything/configs/models/roma_model.py",  # "configs/models/eloftr_model.py", "configs/models/roma_model.py",  # Required, replace with actual path
+        "main_cfg_path": str(Path(__file__).parent.joinpath("Matchanything/configs/models/roma_model.py")),  # "configs/models/eloftr_model.py", "configs/models/roma_model.py",  # Required, replace with actual path
         "ckpt_path": (
             checkpoint_path
             if checkpoint_path is not None
