@@ -315,6 +315,25 @@ class TestPrepareImage:
         out = self._prepared(np.zeros((8, 10, 3), dtype=np.uint8))
         assert out.flags["C_CONTIGUOUS"]
 
+    @pytest.mark.parametrize(
+        "image",
+        [
+            np.full((12, 16), 200, dtype=np.uint8),
+            np.zeros((6, 6, 1), dtype=np.uint8),
+            np.zeros((6, 6, 4), dtype=np.uint8),
+            np.full((5, 5), 3.5, dtype=np.float64),
+        ],
+    )
+    def test_output_is_float32(self, fake_torch, image):
+        """torch.from_numpy adopts the array's dtype.
+
+        The model needs float32, and a float64 input would otherwise produce a
+        double tensor and a dtype mismatch inside the network. Asserting it on
+        the array means the guarantee is checked without torch installed.
+        """
+        fake_torch()
+        assert self._prepared(image).dtype == np.float32
+
 
 class TestApplyMatcher:
     """The wiring between the model output and the returned points."""
