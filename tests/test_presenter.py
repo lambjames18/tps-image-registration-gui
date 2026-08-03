@@ -70,6 +70,39 @@ class TestLoading:
     def test_loading_marks_the_project_unsaved(self, loaded):
         assert loaded.has_unsaved_changes() is True
 
+    def test_second_source_modality_is_added(self, loaded, tmp_path, checkerboard):
+        """Loading another source image adds a modality on the same grid.
+
+        This path used to call add_modality with three positional arguments
+        against a one-argument method, so the documented workflow of layering
+        modalities failed on the source side while working on the destination.
+        """
+        extra = tmp_path / "source_se.tif"
+        io.imsave(extra, checkerboard, check_contrast=False)
+
+        assert loaded.load_source_image(extra, modality_name="SE2") is True
+
+        assert sorted(loaded.get_source_modalities()) == ["BSE", "SE2"]
+        # The view should switch to whatever was just loaded.
+        assert loaded.current_source_mode == "SE2"
+
+    def test_second_source_modality_reports_shape_mismatch(self, loaded, tmp_path):
+        """A differently sized second modality is refused, not silently added."""
+        mismatched = np.zeros((16, 16), dtype=np.uint8)
+        mismatched[4:12, 4:12] = 255
+        path = tmp_path / "wrong_size.tif"
+        io.imsave(path, mismatched, check_contrast=False)
+
+        assert loaded.load_source_image(path, modality_name="SE2") is False
+        assert loaded.get_source_modalities() == ["BSE"]
+
+    def test_second_destination_modality_is_added(self, loaded, tmp_path, checkerboard):
+        extra = tmp_path / "dest_bse.tif"
+        io.imsave(extra, checkerboard.T.copy(), check_contrast=False)
+
+        assert loaded.load_destination_image(extra, modality_name="BSE2") is True
+        assert sorted(loaded.get_destination_modalities()) == ["BSE2", "SE"]
+
     def test_slice_range_for_a_single_image(self, loaded):
         assert loaded.get_slice_range() == (0, 0)
 

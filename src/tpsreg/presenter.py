@@ -193,12 +193,10 @@ class ApplicationPresenter:
                     "Adding modality to existing source image: %s",
                     new_image_data.modalities,
                 )
-                # Add the new modality to existing image data
+                # Add the new modality to existing image data. add_modality
+                # takes the whole ImageData, matching the destination path.
                 modality_key = next(iter(new_image_data.data.keys()))
-                modality_path = next(iter(new_image_data.paths.values()))
-                self.source_image.add_modality(
-                    modality_key, new_image_data.data[modality_key], modality_path
-                )
+                self.source_image.add_modality(new_image_data)
                 # Switch to the newly added modality
                 self.current_source_mode = modality_key
 
