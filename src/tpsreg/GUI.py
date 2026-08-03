@@ -1,22 +1,26 @@
-"""
-view_interface.py - View Interface for Distortion Correction Application
+"""Tkinter view for the multimodal image registration application.
 
-This module defines the interface that any view implementation must follow.
+Defines the abstract :class:`ViewInterface` the presenter talks to, plus the
+concrete Tk implementation and its auxiliary viewer windows.
 """
 
-import os
-from pathlib import Path
+import argparse
 import logging
-from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import Optional, Tuple, List, Dict
-import numpy as np
+import os
+import sys
 import tkinter as tk
-from PIL import Image, ImageTk
-from tkinter import filedialog, ttk, messagebox
-from presenter import ApplicationPresenter, TransformType, CropMode, DataFormat
+from abc import ABC, abstractmethod
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
 
-# Configure logging
+import numpy as np
+from PIL import Image, ImageTk
+
+from tpsreg import __version__
+from tpsreg.presenter import ApplicationPresenter, CropMode, DataFormat, TransformType
+from tpsreg.resources_util import apply_window_icon, theme_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,8 +80,6 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
     def __init__(self):
         super().__init__()
 
-        self.resources_path = Path(__file__).parent.parent.parent / "resources"
-
         # Create presenter
         self.presenter = ApplicationPresenter()
         self.presenter.set_view(self)
@@ -96,27 +98,31 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self._create_controls()
         self._bind_events()
 
-        self.iconbitmap(self.resources_path / "EBSD-Correction.ico")
+        apply_window_icon(self)
 
         logger.info("View initialized")
 
     def _style_call(self, style="dark"):
+        """Apply the packaged Azure theme, falling back to a built-in theme.
+
+        The colours are applied either way, so a theme that refuses to load
+        degrades the look rather than preventing the application from starting.
+        """
         if style == "dark":
             self.bg = "#333333"
             self.fg = "#ffffff"
             self.hl = "#229fff"
             self.hl2 = "#00bb00"
-            self.tk.call("source", self.resources_path / "theme/dark.tcl")
-            s = ttk.Style(self)
-            s.theme_use("azure-dark")
         elif style == "light":
             self.bg = "#ffffff"
             self.fg = "#000000"
             self.hl = "#007fff"
             self.hl2 = "#00bb00"
-            self.tk.call("source", self.resources_path / "theme/light.tcl")
-            s = ttk.Style(self)
-            s.theme_use("azure-light")
+        else:
+            raise ValueError(f"Unknown style: {style!r}. Expected 'dark' or 'light'.")
+
+        s = ttk.Style(self)
+        self.theme_name = self._load_azure_theme(s, style)
 
         s.configure("TFrame", background=self.bg)
         s.configure("TLabel", background=self.bg, foreground=self.fg)
@@ -136,6 +142,54 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             highlightbackground=self.hl,
         )
         s.configure("TEntry", fieldbackground=self.bg, foreground=self.fg)
+
+    def _load_azure_theme(self, style_obj: ttk.Style, style: str) -> str:
+        """Source and activate the packaged Azure theme.
+
+        Returns
+        -------
+        str
+            The ttk theme actually in use, which is the built-in fallback when
+            the packaged theme could not be loaded.
+
+        Notes
+        -----
+        Tk 9 is the reason this is defensive. The theme's ``package require``
+        line has to be unbounded for Tcl to satisfy it against a 9.x
+        interpreter, and a stale copy of the theme (or a future incompatible
+        Tk) would otherwise raise straight out of ``__init__`` and stop the
+        application from opening at all.
+        """
+        theme = f"azure-{style}"
+        try:
+            self.tk.call("source", str(theme_path(style)))
+            style_obj.theme_use(theme)
+            logger.debug("Applied packaged theme %s", theme)
+            return theme
+        except (tk.TclError, FileNotFoundError, ValueError) as exc:
+            available = set(style_obj.theme_names())
+            # clam honours the colour configuration below far better than the
+            # platform-native themes, so prefer it when present.
+            for candidate in ("clam", "default"):
+                if candidate in available:
+                    style_obj.theme_use(candidate)
+                    logger.warning(
+                        "Could not load the %s theme (%s); falling back to '%s'. "
+                        "The application is fully functional, only its "
+                        "appearance changes.",
+                        theme,
+                        exc,
+                        candidate,
+                    )
+                    return candidate
+
+            logger.warning(
+                "Could not load the %s theme (%s) and no fallback theme is "
+                "available; using the Tk default.",
+                theme,
+                exc,
+            )
+            return style_obj.theme_use()
 
     def _setup_window(self):
         """Setup main window properties."""
@@ -666,9 +720,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
         )
 
-        if src_path:
-            if self.presenter.load_source_points(Path(src_path)):
-                self.set_status("Source points loaded successfully")
+        if src_path and self.presenter.load_source_points(Path(src_path)):
+            self.set_status("Source points loaded successfully")
 
     def _on_load_destination_points(self):
         """Handle loading destination control points."""
@@ -677,9 +730,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
         )
 
-        if dst_path:
-            if self.presenter.load_destination_points(Path(dst_path)):
-                self.set_status("Destination points loaded successfully")
+        if dst_path and self.presenter.load_destination_points(Path(dst_path)):
+            self.set_status("Destination points loaded successfully")
 
     def _on_save_points(self):
         """Handle saving control points."""
@@ -721,10 +773,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             filetypes=[("Project Files", "*.json"), ("All Files", "*.*")],
         )
 
-        if file_path:
-            if self.presenter.save_project(Path(file_path)):
-                self.set_status(f"Project saved as {Path(file_path).name}")
-                self.title(f"Multimodal Data Alignment Tool - {Path(file_path).name}")
+        if file_path and self.presenter.save_project(Path(file_path)):
+            self.set_status(f"Project saved as {Path(file_path).name}")
+            self.title(f"Multimodal Data Alignment Tool - {Path(file_path).name}")
 
     def _on_export_transform(self):
         """Handle exporting transformation."""
@@ -744,9 +795,10 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             ],
         )
 
-        if file_path:
-            if self.presenter.export_transform(Path(file_path), transform_type):
-                self.set_status("Transform exported successfully")
+        if file_path and self.presenter.export_transform(
+            Path(file_path), transform_type
+        ):
+            self.set_status("Transform exported successfully")
 
     def _on_export_corrected(self):
         """Handle exporting corrected image."""
@@ -878,7 +930,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         if tag == "":
             return
         self.presenter.remove_point(int(tag))
-        logger.debug(f"Removed point with index {int(tag)}")
+        logger.debug("Removed point with index %s", int(tag))
         self.set_status(f"Removed point pair {int(tag)}")
 
     def _on_canvas_motion(self, event, canvas_type):
@@ -1418,7 +1470,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         else:
             self.progress_bar.stop()
 
-    def _get_image_resolutions_dialog(self) -> Tuple:
+    def _get_image_resolutions_dialog(self) -> tuple:
         """Show dialog to select transformation type."""
         dialog = tk.Toplevel(self)
         dialog.title("Enter Resolution (µm)")
@@ -1463,7 +1515,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0], result[1]
 
-    def _get_transform_type_dialog(self) -> Optional[TransformType]:
+    def _get_transform_type_dialog(self) -> TransformType | None:
         """Show dialog to select transformation type."""
         dialog = tk.Toplevel(self)
         dialog.title("Select Transform Type")
@@ -1505,7 +1557,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0]
 
-    def _get_crop_mode_dialog(self) -> Optional[CropMode]:
+    def _get_crop_mode_dialog(self) -> CropMode | None:
         """Show dialog to select crop mode."""
         dialog = tk.Toplevel(self)
         dialog.title("Select Crop Mode")
@@ -1556,7 +1608,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0]
 
-    def _get_export_format_dialog(self) -> Optional[DataFormat]:
+    def _get_export_format_dialog(self) -> DataFormat | None:
         """Show dialog to select export format."""
         dialog = tk.Toplevel(self)
         dialog.title("Select Export Format")
@@ -1599,7 +1651,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0]
 
-    def _get_modality_name_dialog(self, filename: str) -> Optional[str]:
+    def _get_modality_name_dialog(self, filename: str) -> str | None:
         """Show dialog to enter a modality name for an image."""
         dialog = tk.Toplevel(self)
         dialog.title(f"Loading {filename}")
@@ -1614,7 +1666,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
         # Label
         ttk.Label(
-            main_frame, text=f"Enter a name for this image modality:", wraplength=300
+            main_frame, text="Enter a name for this image modality:", wraplength=300
         ).pack(pady=(0, 10))
 
         # Entry field
@@ -1653,7 +1705,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0]
 
-    def _get_point_clear_dialog(self) -> Optional[str]:
+    def _get_point_clear_dialog(self) -> str | None:
         """Show dialog to choose point clearing option."""
         dialog = tk.Toplevel(self)
         dialog.title("Clear Points")
@@ -1705,7 +1757,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0]
 
-    def _get_auto_detect_params_dialog(self, method: str) -> Optional[Dict]:
+    def _get_auto_detect_params_dialog(self, method: str) -> dict | None:
         """Show dialog to configure auto point detection parameters.
 
         Args:
@@ -1725,7 +1777,6 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         main_frame.pack(fill="both", expand=True)
 
         # Parameter variables
-        params = {}
         entries = {}
 
         if method == "sift":
@@ -1777,7 +1828,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         ransac_filter_var = tk.BooleanVar(value=True)
 
         # Create parameter entries
-        for i, (key, label, default, tooltip) in enumerate(param_defs):
+        for _i, (key, label, default, tooltip) in enumerate(param_defs):
             row_frame = ttk.Frame(main_frame)
             row_frame.pack(fill="x", pady=3)
 
@@ -2699,24 +2750,82 @@ class Interactive2DViewer:
 # ========== Main Entry Point ==========
 
 
-def setup_logging():
-    """Setup application logging."""
+def log_file_path() -> Path:
+    """Return the path of the application log file.
+
+    Logs go to a per-user data directory rather than the current working
+    directory, which may well be read-only (or shared) when tpsreg is launched
+    from an installed console script.
+    """
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Logs"
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+
+    return base / "tpsreg" / "tpsreg.log"
+
+
+def setup_logging(level: int = logging.INFO) -> None:
+    """Configure application logging to the console and a rotating log file."""
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+
+    log_path = log_file_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(
+            RotatingFileHandler(log_path, maxBytes=2_000_000, backupCount=3)
+        )
+    except OSError as exc:
+        # Console logging alone is better than refusing to start.
+        print(f"Warning: could not open log file {log_path}: {exc}", file=sys.stderr)
+
     logging.basicConfig(
-        # level=logging.DEBUG,
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.FileHandler("distortion_correction.log"),
-            logging.StreamHandler(),
-        ],
+        handlers=handlers,
     )
 
 
-def main():
-    """Main application entry point."""
-    setup_logging()
+def main() -> None:
+    """Console entry point for the ``tpsreg`` command."""
+    parser = argparse.ArgumentParser(
+        prog="tpsreg",
+        description=(
+            "Multimodal image registration GUI. Aligns images using a "
+            "thin-plate spline fitted to user-selected control points."
+        ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="enable debug-level logging",
+    )
+    args = parser.parse_args()
 
-    app = ModernDistortionCorrectionView()
+    setup_logging(logging.DEBUG if args.debug else logging.INFO)
+    logger.info("Starting tpsreg %s", __version__)
+
+    try:
+        app = ModernDistortionCorrectionView()
+    except tk.TclError as exc:
+        # The most common cause by far is a headless machine or a missing
+        # Tk installation; a traceback here is pure noise for a scientist.
+        print(
+            f"Could not start the graphical interface: {exc}\n\n"
+            "tpsreg needs a graphical display and a working Tk installation.\n"
+            "On Linux, install Tk with your package manager, for example:\n"
+            "    sudo apt install python3-tk",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+
     app.mainloop()
 
 

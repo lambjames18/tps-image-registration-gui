@@ -1,74 +1,237 @@
-# Distortion correction for EBSD/BSE images
+# Multimodal Image Registration GUI
 
-A python GUI application designed to facilitate multimodal image alignment via a thin-plate spline transformation using identified control points.
+[![CI](https://github.com/lambjames18/tps-image-registration-gui/actions/workflows/ci.yml/badge.svg)](https://github.com/lambjames18/tps-image-registration-gui/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Flambjames18%2Ftps-image-registration-gui%2Fbadges%2Fcoverage.json)](https://github.com/lambjames18/tps-image-registration-gui/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Flambjames18%2Ftps-image-registration-gui%2Fbadges%2Ftests.json)](https://github.com/lambjames18/tps-image-registration-gui/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**Disclaimer: This codebase is under development. Although I try to update the README when changes are made, this does not always happen in a timely manner. Please post an issue if something is not working.**
+A desktop application for aligning multimodal microscopy data using a thin-plate
+spline transformation fitted to matched control points. Built for correlating
+EBSD maps with SEM imaging, but it works on any pair of images that share
+features, in 2D or across a serial-sectioning stack.
 
-
-## Usage
-
-Running the GUI can be done py calling `python GUI.py` from the `src/tpsreg/` directory. The package manager uv is recommended for setting up the proper python environment. If you have uv installed, simply call `uv sync` from the root directory of the cloned repository containing the `pyproject.toml` file. The environment activation scripts, which are platform and terminal dependent, are then located in the `.venv/Scripts/` folder.
-
----
-
-## Description of GUI
-
-### Landing Page
-
-The landing page is shown below. The left and right panels show the source and destination images, respectively. The top bar contains controls that allow one to change the slice (if 3D data is loaded), change the modality shown in the viewers (if multimodal data is loaded), perform contrast local adaptive histogram equalization (CLAHE) on the images, zoom in and out, and perform resolution matching between the source and destination images. The bottom bar contains a status message and a progress bar that is shown when loading/saving projects or running automatic distortion correction. The viewers is where points can be added (left click) or removed (right click).
-
-![image](./resources/theme/GUI-main.jpg "GUI")
+![The main window](./docs/images/GUI-main.jpg)
 
 ---
 
-### Menubar
+## Installation
 
-![image](./resources/theme/GUI-file-menubar.jpg "File Menubar")
+Requires Python 3.11 or newer. This project is distributed through GitHub
+rather than PyPI, so install it from a release or directly from the repository.
 
-The file menubar contains options for creating/opening/saving projects, importing/exporting data, and importing exporting control points.
+**From the latest release** (recommended — download the `.whl` from the
+[releases page](https://github.com/lambjames18/tps-image-registration-gui/releases)):
+
+```bash
+pip install tpsreg-0.2.0-py3-none-any.whl
+```
+
+**From the repository:**
+
+```bash
+pip install git+https://github.com/lambjames18/tps-image-registration-gui.git
+```
+
+Either way, launch it with:
+
+```bash
+tpsreg
+```
+
+Installing into a virtual environment is a good idea if you use Python for
+other work:
+
+```bash
+python -m venv tpsreg-env
+source tpsreg-env/bin/activate     # Windows: tpsreg-env\Scripts\activate
+pip install <wheel-or-git-url>
+tpsreg
+```
+
+### Tk
+
+The interface uses Tkinter, which ships with Python on Windows and macOS but is
+a separate package on most Linux distributions:
+
+```bash
+sudo apt install python3-tk        # Debian, Ubuntu
+sudo dnf install python3-tkinter   # Fedora, RHEL
+sudo pacman -S tk                  # Arch
+```
+
+### Optional extras
+
+The base install is deliberately lightweight — it does not pull in PyTorch.
+Everything except automatic point detection works without it: loading data,
+placing control points, CLAHE, previewing, and every export path.
+
+| Extra | Install | What it adds |
+|---|---|---|
+| `accelerated` | `pip install "tpsreg[accelerated]"` | GPU-accelerated CLAHE and resizing via kornia/torchvision. Falls back to scikit-image without it. |
+| `matchanything` | `pip install "tpsreg[matchanything]"` | Automatic control point detection with the pretrained MatchAnything/ROMA model. |
+
+To use MatchAnything you also need the model weights, which are
+[downloaded separately](https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view)
+and pointed at from **Auto → Set MatchAnything checkpoint...**. The model runs on
+CUDA, Apple Silicon (MPS) or CPU, selected automatically; CPU inference works but
+is slow. The first run downloads additional internal weights.
+
+### Development install
+
+```bash
+git clone https://github.com/lambjames18/tps-image-registration-gui.git
+cd tps-image-registration-gui
+pip install -e ".[dev]"
+pre-commit install
+pytest
+```
+
+Or with [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync
+uv run tpsreg
+```
 
 ---
 
-![image](./resources/theme/GUI-edit-menubar.jpg "Edit Menubar")
+## Quickstart
 
-The edit menu contains options for undoing and redoing actions, clearning points in the project, and setting the resolution of the data. When setting the resolution, the user should specify the pixel size of the data in microns for both the source and destination images. The resolution is only used if the "Match Resolutions" option is enabled in the automatic correction settings. If this option is enabled, the control points will be automatically adjusted to account for differences in resolution between the source and destination images. If the resolution is not set, the code will assume that the source and destination images have the same resolution.
+The `demo_data/` directory contains a complete 2D example (an EBSD scan, BSE and
+SE micrographs, and pre-picked control points) and a 3D serial-sectioning
+example. See [demo_data/README.md](demo_data/README.md) for details.
+
+1. **Load your images.** File → *Open source image...* and *Open destination
+   image...*. The **source** is the image that gets warped, so load the more
+   distorted one there. Plain images (`.tif`, `.png`, `.jpg`) prompt for a
+   modality name; EBSD files (`.ang`, `.h5`, `.dream3d`) load all their
+   modalities automatically. Call *Open ... image* again with a different name
+   to add more modalities on the same grid.
+2. **Set the resolution.** Edit → *Set resolution...*, in microns per pixel for
+   both images. Needed for the "Match resolutions" feature and for source-cropped
+   export.
+3. **Save the project.** File → *Save project...* writes all data, points and
+   settings to a single JSON file.
+4. **Place control points.** Left-click to add, right-click near a point to
+   remove. Click the source first, then its partner in the destination.
+5. **Preview.** View → *View corrected image*. Adjust points and repeat until
+   satisfied.
+6. **Export.** File → *Export corrected data...*.
+
+Aim for 10–20 points spread evenly across the field of view; more distortion
+needs more points. CLAHE and zoom make features easier to match precisely, and
+"Match resolutions" renders both images at the same feature scale.
 
 ---
 
-![image](./resources/theme/GUI-view-menubar.jpg "View Menubar")
+## Interface reference
 
-The view menu contains options for toggling the visibility of various elements in the GUI (e.g. control points). "Hide points" is self explanatory and simply removes the points from being visible in the viewers. The "View corrected image" and "View correced image stack" options will open a new window showing the corrected source image overlaid on the destination image. In the preview, there are sliders that allow you to adjust the overlay, and in the 3D case, change the slice and the slicing axis through the volume. This window is shown below. Only thin-plate spline transformations (affine only or fully deformable) are supported in this GUI.
+### Main window
 
-![image](./resources/theme/GUI-preview.jpg "Correction Preview")
+The left and right panels show the source and destination images. The top bar
+controls the slice (for 3D data), the displayed modality, CLAHE, zoom, and
+resolution matching. The bottom bar shows status and a progress bar during long
+operations.
 
-The "View matched points" option of the view menubar will also open a new window showing the source and destination images side by side with lines connecting the matched control points. This window is shown below.
+### File menu
 
-![image](./resources/theme/GUI-points.jpg "Matched Points")
+![File menu](./docs/images/GUI-file-menubar.jpg)
+
+Create, open and save projects; import and export data; import and export
+control points.
+
+### Edit menu
+
+![Edit menu](./docs/images/GUI-edit-menubar.jpg)
+
+Undo and redo, clear points, and set the pixel size of each image. Each click is
+one undoable step. If the resolution is not set, both images are assumed to have
+the same pixel size.
+
+### View menu
+
+![View menu](./docs/images/GUI-view-menubar.jpg)
+
+Toggle point visibility and open the preview windows.
+
+*View corrected image* overlays the warped source on the destination, with
+sliders for the blend and — in 3D — for the slice and slicing axis.
+
+![Correction preview](./docs/images/GUI-preview.jpg)
+
+*View matched points* shows both images side by side with lines joining matched
+points, which makes bad correspondences obvious.
+
+![Matched points](./docs/images/GUI-points.jpg)
+
+### Auto menu
+
+![Auto menu](./docs/images/GUI-auto-menubar.jpg)
+
+Detect control points automatically with either SIFT or the pretrained
+MatchAnything model.
+
+![MatchAnything settings](./docs/images/GUI-auto-options.jpg)
+
+| Setting | Meaning |
+|---|---|
+| Num samples | Maximum number of matched points to return. |
+| Enable RANSAC filtering | Reject correspondences inconsistent with a global transform. Leave on. |
+| RANSAC method | `deformable` (default), `affine`, or `projective`. `deformable` and `projective` give broadly similar results; use `affine` only when you know the distortion is affine. |
+| RANSAC threshold | 0.01–0.1 for `deformable` (normalized units), around 5.0 for `affine`/`projective` (pixels). |
+| RANSAC max trials | Iterations. At least 100; raise it when the outlier rate is high. |
 
 ---
 
-![image](./resources/theme/GUI-auto-menubar.jpg "Auto Menubar")
+## Export formats and cropping
 
-The auto menu contains options for running automatic distortion correction using a pretrained deep learning model. Using either SIFT or the pretrained MatchAnything model from HuggingFace, the code will attempt to find matched control points between the source and destination images. Note that if running the MatchAnything model, one will have to select the "Set MatchAnything checkpoint..." option from the menubar and direct the GUI to the location of the weights. Those weights can be downloaded [here](https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view). The MatchAnything model is quite large and may take a while to load and run, especially if you do not have a compatible NVIDIA GPU. Running the model for the first time will download some internal model weights and may take a while to run. After the first run, the model will be cached and should run much faster.
+Exporting asks for a format and a cropping mode:
 
-If using MatchAnything, a few settings can be adjusted in the subsequent window that pops up (below). The default settings provide a good starting point for most cases, but feel free to experiment with the settings to see if you can get better results. "Num samples" refers to the maximum number of matched points that the model will return. "RANSAC Threshold" is used to select valid points and should be in the range 0.01-0.1 (deformable ransac) or ~5.0 (projective ransac) for most images. "RANSAC Max Trials" is the maximum number of iterations that RANSAC will run to find valid points and should be at least 100. "Enable RANSAC filtering" should almost always be True and will filter the matched points using RANSAC to find a subset of valid points that are consistent with a global transformation. This can help to improve the quality of the matched points, especially if there are a lot of outliers. "RANSAC Method" is the type of transformation that RANSAC will use to find valid points. The method should generally be set to "deformable" unless you know that your final transformation should be either an affine transformation or projective (homography) transformation. "deformable" and "projective" broadly produce very similar results.
+- **Destination cropping** produces output with the destination image's
+  dimensions. Prefer this in most cases.
+- **Source cropping** preserves the source grid. Use this for EBSD data,
+  particularly DREAM.3D files, where the grid must be preserved. Set the
+  resolution first so features end up at the same scale.
 
-![image](./resources/theme/GUI-auto-options.jpg "MatchAnything Settings")
+An `.ang` file can only be exported when the source data was loaded from one.
 
 ---
 
-## Tutorial
+## Using tpsreg as a library
 
-### Load data
-Load source and destination images using the "Open source image..." and "Open destination image..." options in the file menubar. The source image is the one that will be warped to match the destination image, so typically the more distorted image should be loaded as the source and the less distorted image should be loaded as the destination. Images and EBSD data (ang files or 2D, dream3d files for 3D) can be loaded. For any basic image type, the user will be prompted to name the modality of the data (e.q. BSE, TLD, SE, etc.). Additional modalities can be added by selecting the "Open [...] image..." additional times and entering different modality names. For EBSD data, all available modalities will be loaded automatically. Make sure to set the resolution of the data after loading using the "Set resolution..." option in the edit menubar. From here, it is recommended to save the project using the "Save project..." option in the file menubar. This will save all loaded data, control points, and settings in a single json file that can be easily reloaded later.
+The registration core is importable and does not require a display:
 
-### Select control points
-With the images loaded, the user can add control points by left clicking in the viewers. Points can be removed by right clicking near a point. The control points should be placed in corresponding locations in the source and destination images. It is recommended to place points in areas that are easily identifiable in both images and are distributed evenly across the field of view.
+```python
+import numpy as np
+from tpsreg import ThinPlateSplineTransform, transform_image
 
-Tips include using CLAHE to enhance contrast in the images, zooming in to place points more accurately, and using the "Match resolutions" option so that features in the source and destination images are the same size. This will make it easier to place points in corresponding locations in the two images. Generally speaking, points should be well distributed across the field of view and there should be at least 10-20 points for a good correction, although this number may vary depending on the amount of distortion in the images and the desired level of accuracy.
+src = np.array([[10, 10], [10, 90], [90, 10], [90, 90], [50, 50]], dtype=float)
+dst = np.array([[12, 11], [11, 88], [91, 13], [89, 92], [51, 49]], dtype=float)
 
-### Preview correction and revise points as needed
-With the control points selected, the user can preview the correction by selecting the "View corrected image" option in the view menubar. If the correction does not look good, try adjusting the control points and previewing again until you are satisfied with the result.
+# Fit a spline over a 100x100 destination grid.
+tform = ThinPlateSplineTransform()
+tform.estimate(src, dst, size=(100, 100))
 
-### Export corrected data
-Once the user is satisfied with the correction, the corrected source image can be exported using the "Export corrected data..." option in the file menubar. You will be prompted to select an export format (note that an ANG file can only be exported if the source data was originally loaded from an ANG file). After selecting the export format, you will be prompted to select an export location. The GUI will save out the corrected source image, the original source image, and the destination image. **Note: You will have to select a cropping (source or destination) for the output. Source means that the output will have the same image dimensions as the source image. Destination means that the output will have the same as the destination. In most cases, destination will be preferred. However, for EBSD data, particularly dream3d files, one should select source so that the EBSD grid can be preserved.** The cropping selection is also required for the preview. If using the source cropping mode, the resolution should be set to ensure that features in the source and destination images are the same size.
+# Or warp an image in one call.
+warped = transform_image(image, src, dst, output_shape=(100, 100), order=1)
+```
+
+`tpsreg.ransac.ransac_filter` is available separately for rejecting outlier
+correspondences.
+
+---
+
+## Contributing
+
+Bug reports and pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+If something does not work, please
+[open an issue](https://github.com/lambjames18/tps-image-registration-gui/issues).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+This project vendors the [MatchAnything](https://github.com/zju3dv/MatchAnything)
+model and its RoMa dependency under `src/tpsreg/Matchanything/`, which carry
+their own permissive licenses (Apache-2.0 and MIT). See [NOTICE.md](NOTICE.md).

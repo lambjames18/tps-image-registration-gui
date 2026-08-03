@@ -1,0 +1,82 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please do not attach proprietary or unpublished
+        data — a cropped or synthetic example that reproduces the problem is
+        ideal.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you were doing, and what happened instead of what you expected.
+      placeholder: |
+        I loaded a .dream3d file as the source and clicked View > View corrected
+        image stack. The window opened but every slice was blank.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. File > Open source image..., select EBSD.dream3d
+        2. File > Open destination image..., select BSE_001.tif through BSE_005.tif
+        3. Place points on slices 0 and 4
+        4. View > View corrected image stack
+    validations:
+      required: true
+
+  - type: dropdown
+    id: data-format
+    attributes:
+      label: Data format involved
+      multiple: true
+      options:
+        - .ang (EDAX)
+        - .h5 (EDAX / Oxford)
+        - .dream3d
+        - TIFF / PNG / JPEG
+        - Not data-specific
+    validations:
+      required: true
+
+  - type: dropdown
+    id: dimensionality
+    attributes:
+      label: 2D or 3D?
+      options: ["2D", "3D (stack)", "Both", "Not applicable"]
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: tpsreg version
+      description: Output of `pip show tpsreg`, or the commit hash if running from a clone.
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Python version
+      placeholder: "Windows 11, Python 3.12.4"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Traceback and log output
+      description: |
+        Paste any traceback, plus the relevant part of the log file:
+        Linux `~/.local/state/tpsreg/tpsreg.log`,
+        macOS `~/Library/Logs/tpsreg/tpsreg.log`,
+        Windows `%LOCALAPPDATA%\tpsreg\tpsreg.log`
+      render: shell
