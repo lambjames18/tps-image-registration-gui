@@ -103,22 +103,26 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         logger.info("View initialized")
 
     def _style_call(self, style="dark"):
+        """Apply the packaged Azure theme, falling back to a built-in theme.
+
+        The colours are applied either way, so a theme that refuses to load
+        degrades the look rather than preventing the application from starting.
+        """
         if style == "dark":
             self.bg = "#333333"
             self.fg = "#ffffff"
             self.hl = "#229fff"
             self.hl2 = "#00bb00"
-            self.tk.call("source", str(theme_path("dark")))
-            s = ttk.Style(self)
-            s.theme_use("azure-dark")
         elif style == "light":
             self.bg = "#ffffff"
             self.fg = "#000000"
             self.hl = "#007fff"
             self.hl2 = "#00bb00"
-            self.tk.call("source", str(theme_path("light")))
-            s = ttk.Style(self)
-            s.theme_use("azure-light")
+        else:
+            raise ValueError(f"Unknown style: {style!r}. Expected 'dark' or 'light'.")
+
+        s = ttk.Style(self)
+        self.theme_name = self._load_azure_theme(s, style)
 
         s.configure("TFrame", background=self.bg)
         s.configure("TLabel", background=self.bg, foreground=self.fg)
@@ -138,6 +142,54 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             highlightbackground=self.hl,
         )
         s.configure("TEntry", fieldbackground=self.bg, foreground=self.fg)
+
+    def _load_azure_theme(self, style_obj: ttk.Style, style: str) -> str:
+        """Source and activate the packaged Azure theme.
+
+        Returns
+        -------
+        str
+            The ttk theme actually in use, which is the built-in fallback when
+            the packaged theme could not be loaded.
+
+        Notes
+        -----
+        Tk 9 is the reason this is defensive. The theme's ``package require``
+        line has to be unbounded for Tcl to satisfy it against a 9.x
+        interpreter, and a stale copy of the theme (or a future incompatible
+        Tk) would otherwise raise straight out of ``__init__`` and stop the
+        application from opening at all.
+        """
+        theme = f"azure-{style}"
+        try:
+            self.tk.call("source", str(theme_path(style)))
+            style_obj.theme_use(theme)
+            logger.debug("Applied packaged theme %s", theme)
+            return theme
+        except (tk.TclError, FileNotFoundError, ValueError) as exc:
+            available = set(style_obj.theme_names())
+            # clam honours the colour configuration below far better than the
+            # platform-native themes, so prefer it when present.
+            for candidate in ("clam", "default"):
+                if candidate in available:
+                    style_obj.theme_use(candidate)
+                    logger.warning(
+                        "Could not load the %s theme (%s); falling back to '%s'. "
+                        "The application is fully functional, only its "
+                        "appearance changes.",
+                        theme,
+                        exc,
+                        candidate,
+                    )
+                    return candidate
+
+            logger.warning(
+                "Could not load the %s theme (%s) and no fallback theme is "
+                "available; using the Tk default.",
+                theme,
+                exc,
+            )
+            return style_obj.theme_use()
 
     def _setup_window(self):
         """Setup main window properties."""
