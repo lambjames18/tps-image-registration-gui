@@ -70,11 +70,19 @@ jobs:
       # are lost with it. Splitting keeps the failure legible.
       - name: Run tests
         if: runner.os != 'Linux'
-        run: python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term --junitxml=junit.xml
+        run: python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term
 
       - name: Run tests (Linux, under Xvfb)
         if: runner.os == 'Linux'
-        run: xvfb-run -a python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term --junitxml=junit.xml
+        run: xvfb-run -a python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term
+
+      - name: Run GUI tests
+        if: runner.os != 'Linux'
+        run: python -m pytest tests/ -v -m gui
+
+      - name: Run GUI tests (Linux, under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest tests/ -v -m gui
 
       - name: Run GUI tests
         if: runner.os != 'Linux'
