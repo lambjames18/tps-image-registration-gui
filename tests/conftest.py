@@ -39,9 +39,14 @@ def checkerboard() -> np.ndarray:
     return image
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def demo_data_dir() -> Path:
-    """Path to the bundled demo data, skipping the test when it is absent."""
+    """Path to the bundled demo data, skipping the test when it is absent.
+
+    Session-scoped so that session-scoped fixtures (which cannot depend on
+    narrower ones) can build cached loads on top of it. It only resolves a
+    path, so there is no state to leak between tests.
+    """
     if not DEMO_DATA.is_dir():
         pytest.skip("demo_data/ is not present in this checkout")
     return DEMO_DATA

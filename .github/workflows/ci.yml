@@ -64,15 +64,25 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]" pytest pytest-cov
 
-      # macOS and Windows runners have Tk and a window server, so the GUI
-      # tests run directly there.
+      # The GUI tests run in their own pytest process. Tk can take the whole
+      # interpreter down with a segfault (it did on macOS), and when that
+      # happens in a combined run every other result and the coverage report
+      # are lost with it. Splitting keeps the failure legible.
       - name: Run tests
         if: runner.os != 'Linux'
-        run: python -m pytest tests/ -v --cov=tpsreg --cov-report=xml --cov-report=term
+        run: python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term
 
       - name: Run tests (Linux, under Xvfb)
         if: runner.os == 'Linux'
-        run: xvfb-run -a python -m pytest tests/ -v --cov=tpsreg --cov-report=xml --cov-report=term
+        run: xvfb-run -a python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term
+
+      - name: Run GUI tests
+        if: runner.os != 'Linux'
+        run: python -m pytest tests/ -v -m gui
+
+      - name: Run GUI tests (Linux, under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest tests/ -v -m gui
 
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'

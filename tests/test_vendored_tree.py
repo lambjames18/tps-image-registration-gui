@@ -9,7 +9,7 @@ first time a user clicks "Auto detect".
 from __future__ import annotations
 
 import ast
-from pathlib import Path
+from pathlib import Path, PurePath, PureWindowsPath
 
 import pytest
 
@@ -72,6 +72,16 @@ def _relative(path: Path, node: ast.ImportFrom) -> list[Path]:
     return [p for p in out if p.is_file()]
 
 
+def _import_key(relative_path: PurePath, module: str) -> str:
+    """Build the stable identifier for an unresolved import.
+
+    Uses ``as_posix()`` so the key is identical on every platform. Plain
+    ``str(Path)`` renders backslashes on Windows, which silently broke the
+    comparison against the expected set below.
+    """
+    return f"{relative_path.as_posix()}: {module}"
+
+
 def _targets(path: Path, node: ast.AST) -> list[Path]:
     if isinstance(node, ast.ImportFrom):
         if node.level:
@@ -120,6 +130,31 @@ def reachable_modules() -> set[Path]:
     return seen
 
 
+class TestImportKey:
+    """The identifier used to compare unresolved imports."""
+
+    def test_posix_and_windows_paths_agree(self):
+        """The key must not depend on the host separator.
+
+        This is the bug that failed every Windows CI job: the key was built
+        with str(Path), so Windows produced backslashes and never matched the
+        expected set. PureWindowsPath lets us prove the fix from any platform.
+        """
+        posix = _import_key(
+            PurePath("src/loftr/utils/coarse_matching.py"), ".superglue"
+        )
+        windows = _import_key(
+            PureWindowsPath(r"src\loftr\utils\coarse_matching.py"), ".superglue"
+        )
+
+        assert posix == windows
+        assert posix == "src/loftr/utils/coarse_matching.py: .superglue"
+
+    def test_key_never_contains_a_backslash(self):
+        key = _import_key(PureWindowsPath(r"a\b\c.py"), ".mod")
+        assert "\\" not in key
+
+
 class TestReachability:
     """The tree contains exactly what the inference path needs."""
 
@@ -143,7 +178,9 @@ class TestReachability:
                 # any that fails to resolve names a file that is really gone.
                 if not _relative(path, node):
                     module = "." * node.level + (node.module or "")
-                    unresolved.append(f"{path.relative_to(VENDOR_ROOT)}: {module}")
+                    unresolved.append(
+                        _import_key(path.relative_to(VENDOR_ROOT), module)
+                    )
 
         # Upstream ships this one dangling import behind a try/except for a
         # match type this project does not use.
