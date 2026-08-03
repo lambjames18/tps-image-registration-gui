@@ -5,14 +5,19 @@ Based on "In Defence of RANSAC for Outlier Rejection in Deformable Registration"
 by Tran et al.
 """
 
+from __future__ import annotations
+
+import logging
+
 import numpy as np
-from typing import Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_correspondences(
     src_points: np.ndarray,
     dst_points: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Normalize correspondence data for RANSAC.
 
@@ -52,7 +57,7 @@ def _normalize_correspondences(
 def _fit_affine_subspace(
     src_points: np.ndarray,
     dst_points: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     """
     Fit a 2D affine subspace to correspondences in 4D space.
 
@@ -75,14 +80,12 @@ def _fit_affine_subspace(
     centroid = correspondences.mean(axis=0)
     centered = correspondences - centroid  # Nx4
 
-    # SVD: centered = U @ diag(S) @ Vt
-    # U is NxN, S is min(N,4), Vt is 4x4
-    # The right singular vectors (rows of Vt, or columns of V) give
-    # the principal directions in the 4D feature space
-    U, S, Vt = np.linalg.svd(centered, full_matrices=True)
+    # SVD: centered = U @ diag(S) @ Vt. The right singular vectors (rows of Vt)
+    # give the principal directions in the 4D feature space.
+    _, _, Vt = np.linalg.svd(centered, full_matrices=True)
 
-    # V = Vt.T, so we take the first 2 columns of V (first 2 rows of Vt)
-    # These correspond to the 2D affine subspace in the 4D space
+    # V = Vt.T, so the first 2 columns of V (first 2 rows of Vt) span the 2D
+    # affine subspace within the 4D correspondence space.
     basis = Vt[:2, :].T  # 4x2
 
     return centroid, basis
@@ -129,7 +132,7 @@ def deformable_ransac_filter(
     dst_points: np.ndarray,
     threshold: float = 0.2,
     max_trials: int = 100,
-    random_seed: int = None,
+    random_seed: int | None = None,
 ) -> np.ndarray:
     """
     Apply RANSAC filtering to remove outlier matches for deformable registration.
@@ -181,33 +184,30 @@ def deformable_ransac_filter(
     src_points = np.asarray(src_points, dtype=np.float64)
     dst_points = np.asarray(dst_points, dtype=np.float64)
 
-    if src_points.shape[0] < 3:
-        raise ValueError("Need at least 3 point correspondences for RANSAC")
-    if src_points.shape != dst_points.shape:
-        raise ValueError("Source and destination points must have same shape")
     if src_points.ndim != 2 or src_points.shape[1] != 2:
         raise ValueError("Points must be Nx2 arrays")
+    if src_points.shape != dst_points.shape:
+        raise ValueError("Source and destination points must have same shape")
+    if src_points.shape[0] < 3:
+        raise ValueError("Need at least 3 point correspondences for RANSAC")
 
-    # Set random seed for reproducibility
-    if random_seed is not None:
-        np.random.seed(random_seed)
+    # A local generator keeps the caller's global numpy random state intact.
+    rng = np.random.default_rng(random_seed)
 
     N = src_points.shape[0]
     min_samples = 3  # Minimal set to define 2D affine subspace in 4D
 
     # Normalize the data
-    src_norm, dst_norm, src_transform, dst_transform = _normalize_correspondences(
-        src_points, dst_points
-    )
+    src_norm, dst_norm, _, _ = _normalize_correspondences(src_points, dst_points)
     norm_threshold = threshold  # Threshold is already normalized
 
     best_inliers = np.zeros(N, dtype=bool)
     best_num_inliers = 0
 
     # RANSAC iterations
-    for trial in range(max_trials):
+    for _ in range(max_trials):
         # Randomly sample minimal set
-        sample_indices = np.random.choice(N, size=min_samples, replace=False)
+        sample_indices = rng.choice(N, size=min_samples, replace=False)
         sample_src = src_norm[sample_indices]
         sample_dst = dst_norm[sample_indices]
 
@@ -250,51 +250,104 @@ def deformable_ransac_filter(
     return best_inliers
 
 
+def _skimage_ransac_filter(
+    src_points: np.ndarray,
+    dst_points: np.ndarray,
+    model_class: type,
+    min_samples: int,
+    threshold: float,
+    max_trials: int,
+    random_seed: int | None = None,
+) -> np.ndarray:
+    """Run scikit-image's RANSAC with a parametric transform model.
+
+    Returns
+    -------
+    np.ndarray
+        Boolean inlier mask.
+
+    Raises
+    ------
+    ValueError
+        If there are fewer than ``min_samples`` correspondences.
+    RuntimeError
+        If RANSAC could not fit a model.
+    """
+    from skimage.measure import ransac
+
+    src_points = np.asarray(src_points, dtype=np.float64)
+    dst_points = np.asarray(dst_points, dtype=np.float64)
+
+    if src_points.shape != dst_points.shape:
+        raise ValueError("Source and destination points must have same shape")
+    if src_points.shape[0] < min_samples:
+        raise ValueError(f"Need at least {min_samples} point correspondences")
+
+    try:
+        model, inliers = ransac(
+            (src_points, dst_points),
+            model_class,
+            min_samples=min_samples,
+            residual_threshold=threshold,
+            max_trials=max_trials,
+            rng=random_seed,
+        )
+    except TypeError:
+        # scikit-image renamed random_state -> rng in 0.25.
+        model, inliers = ransac(
+            (src_points, dst_points),
+            model_class,
+            min_samples=min_samples,
+            residual_threshold=threshold,
+            max_trials=max_trials,
+            random_state=random_seed,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"RANSAC fitting failed: {exc}") from exc
+
+    # skimage returns (None, None) when no model reaches the inlier threshold.
+    if model is None or inliers is None:
+        raise RuntimeError(
+            f"RANSAC could not fit a {model_class.__name__} to the given "
+            f"correspondences; try increasing the threshold or max_trials."
+        )
+
+    return inliers
+
+
 def affine_ransac_filter(
     src_points: np.ndarray,
     dst_points: np.ndarray,
     threshold: float = 5.5,
     max_trials: int = 1000,
+    random_seed: int | None = None,
 ) -> np.ndarray:
-    """
-    Alternative RANSAC implementation using scikit-image (simpler affine approach).
+    """Filter correspondences with a global affine model.
 
-    This is a simpler alternative using scikit-image's built-in RANSAC,
-    but it uses a full affine transform rather than fitting the 4D manifold.
+    Simpler than the deformable method: it assumes a single affine transform
+    explains every inlier, rather than fitting the 4D correspondence manifold.
 
     Args:
         src_points: Nx2 array of source points
         dst_points: Nx2 array of destination points
         threshold: RANSAC inlier threshold in pixels
         max_trials: Maximum number of RANSAC iterations
+        random_seed: Seed for reproducibility
 
     Returns:
         Boolean mask indicating inlier matches
     """
-    try:
-        from skimage.measure import ransac
-        from skimage.transform import AffineTransform
-    except ImportError:
-        raise ImportError("scikit-image is required for this function")
+    from skimage.transform import AffineTransform
 
-    src_points = np.asarray(src_points, dtype=np.float64)
-    dst_points = np.asarray(dst_points, dtype=np.float64)
-
-    if src_points.shape[0] < 3:
-        raise ValueError("Need at least 3 point correspondences")
-
-    # Use RANSAC with affine transform
-    try:
-        model, inliers = ransac(
-            (src_points, dst_points),
-            AffineTransform,
-            min_samples=3,
-            residual_threshold=threshold,
-            max_trials=max_trials,
-        )
-        return inliers
-    except Exception as e:
-        raise RuntimeError(f"RANSAC fitting failed: {e}")
+    return _skimage_ransac_filter(
+        src_points,
+        dst_points,
+        AffineTransform,
+        min_samples=3,
+        threshold=threshold,
+        max_trials=max_trials,
+        random_seed=random_seed,
+    )
 
 
 def projective_ransac_filter(
@@ -302,45 +355,31 @@ def projective_ransac_filter(
     dst_points: np.ndarray,
     threshold: float = 5.5,
     max_trials: int = 1000,
+    random_seed: int | None = None,
 ) -> np.ndarray:
-    """
-    Alternative RANSAC implementation using scikit-image (projective transform).
-
-    This uses scikit-image's built-in RANSAC with a projective transform.
+    """Filter correspondences with a global projective (homography) model.
 
     Args:
         src_points: Nx2 array of source points
         dst_points: Nx2 array of destination points
         threshold: RANSAC inlier threshold in pixels
         max_trials: Maximum number of RANSAC iterations
+        random_seed: Seed for reproducibility
 
     Returns:
         Boolean mask indicating inlier matches
     """
-    try:
-        from skimage.measure import ransac
-        from skimage.transform import ProjectiveTransform
-    except ImportError:
-        raise ImportError("scikit-image is required for this function")
+    from skimage.transform import ProjectiveTransform
 
-    src_points = np.asarray(src_points, dtype=np.float64)
-    dst_points = np.asarray(dst_points, dtype=np.float64)
-
-    if src_points.shape[0] < 4:
-        raise ValueError("Need at least 4 point correspondences")
-
-    # Use RANSAC with projective transform
-    try:
-        model, inliers = ransac(
-            (src_points, dst_points),
-            ProjectiveTransform,
-            min_samples=4,
-            residual_threshold=threshold,
-            max_trials=max_trials,
-        )
-        return inliers
-    except Exception as e:
-        raise RuntimeError(f"RANSAC fitting failed: {e}")
+    return _skimage_ransac_filter(
+        src_points,
+        dst_points,
+        ProjectiveTransform,
+        min_samples=4,
+        threshold=threshold,
+        max_trials=max_trials,
+        random_seed=random_seed,
+    )
 
 
 def ransac_filter(
@@ -349,7 +388,7 @@ def ransac_filter(
     threshold: float = 5.5,
     max_trials: int = 100,
     method: str = "deformable",
-    random_seed: int = None,
+    random_seed: int | None = None,
 ) -> np.ndarray:
     """
     General RANSAC filtering interface.
@@ -357,11 +396,15 @@ def ransac_filter(
     Args:
         src_points: Nx2 array of source points
         dst_points: Nx2 array of destination points
-        threshold: RANSAC inlier threshold
+        threshold: RANSAC inlier threshold. Note the scale differs by method:
+                   the deformable method works in normalized coordinates
+                   (~0.05-0.5) while the affine and projective methods work in
+                   pixels (~5.0).
         max_trials: Maximum number of RANSAC iterations
-        method: "deformable" for Tran et al. method, "affine" for scikit-image affine RANSAC,
-                "projective" or "homography" for scikit-image projective RANSAC
-        random_seed: Random seed for reproducibility (only for deformable method)
+        method: "deformable" for the Tran et al. method, "affine" for
+                scikit-image affine RANSAC, "projective"/"homography" for
+                scikit-image projective RANSAC
+        random_seed: Random seed for reproducibility
 
     Returns:
         Boolean mask indicating inlier matches
@@ -371,112 +414,12 @@ def ransac_filter(
             src_points, dst_points, threshold, max_trials, random_seed
         )
     elif method == "affine":
-        return affine_ransac_filter(src_points, dst_points, threshold, max_trials)
-    elif method == "projective" or method == "homography":
-        return projective_ransac_filter(src_points, dst_points, threshold, max_trials)
+        return affine_ransac_filter(
+            src_points, dst_points, threshold, max_trials, random_seed
+        )
+    elif method in ("projective", "homography"):
+        return projective_ransac_filter(
+            src_points, dst_points, threshold, max_trials, random_seed
+        )
     else:
         raise ValueError(f"Unknown RANSAC method: {method}")
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-
-    # Create synthetic test data with a known warp
-    np.random.seed(42)
-
-    # Generate inliers from structured locations
-    grid_size = 8
-    src = np.mgrid[0 : 100 : grid_size * 1j, 0 : 100 : grid_size * 1j].T.reshape(-1, 2)
-    n_inliers = len(src)
-
-    # Apply a known warp (affine + small nonlinear)
-    dst = src.copy()
-    a11, a12, a13 = 0.98, 0.05, 2.0
-    a21, a22, a23 = -0.02, 1.02, 1.5
-    dst[:, 0] = a11 * src[:, 0] + a12 * src[:, 1] + a13
-    dst[:, 1] = a21 * src[:, 0] + a22 * src[:, 1] + a23
-
-    # Add small matching error to inliers
-    dst += np.random.randn(*dst.shape) * 0.3
-
-    # Add LARGE random outliers (completely wrong matches)
-    n_outliers = 30
-    src_outliers = np.random.rand(n_outliers, 2) * 100
-    # Generate destination for outliers completely independently
-    dst_outliers = (
-        np.random.rand(n_outliers, 2) * 100 + np.random.randn(n_outliers, 2) * 20
-    )
-
-    # Combine
-    src_all = np.vstack([src, src_outliers])
-    dst_all = np.vstack([dst, dst_outliers])
-
-    # Shuffle to mix inliers and outliers
-    shuffle_idx = np.random.permutation(len(src_all))
-    src_all = src_all[shuffle_idx]
-    dst_all = dst_all[shuffle_idx]
-    inlier_mask_true = np.zeros(len(src_all), dtype=bool)
-    inlier_mask_true[shuffle_idx < n_inliers] = True
-
-    # Try different thresholds
-    print("=" * 70)
-    print("RANSAC Filtering - Synthetic Data with Random Outliers")
-    print("=" * 70)
-
-    for threshold in [0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 1.0]:
-        inliers = ransac_filter(
-            src_all,
-            dst_all,
-            threshold=threshold,
-            max_trials=200,
-            random_seed=42,
-            method="deformable",
-        )
-
-        # Measure performance
-        tp = (inliers & inlier_mask_true).sum()  # True positives
-        fp = (inliers & ~inlier_mask_true).sum()  # False positives
-        fn = (~inliers & inlier_mask_true).sum()  # False negatives
-        tn = (~inliers & ~inlier_mask_true).sum()  # True negatives
-
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-
-        print(f"\nThreshold = {threshold}:")
-        print(f"  Detected inliers: {inliers.sum()}")
-        print(f"  TP={tp}, FP={fp}, FN={fn}, TN={tn}")
-        print(f"  Recall:     {recall*100:6.1f}% (proportion of true inliers found)")
-        print(
-            f"  Precision:  {precision*100:6.1f}% (proportion of detections that are correct)"
-        )
-        print(
-            f"  Specificity:{specificity*100:6.1f}% (proportion of true outliers found)"
-        )
-
-        fig, ax = plt.subplots(figsize=(6, 6))
-        ax.scatter(
-            src_all[~inliers, 0],
-            src_all[~inliers, 1],
-            c="red",
-            label="Outliers",
-            alpha=0.5,
-        )
-        ax.scatter(
-            src_all[inliers, 0],
-            src_all[inliers, 1],
-            c="green",
-            label="Inliers",
-            alpha=0.5,
-        )
-        ax.scatter(
-            src_outliers[:, 0],
-            src_outliers[:, 1],
-            c="black",
-            label="True Outliers",
-            marker="x",
-        )
-        ax.legend()
-        ax.set_title(f"RANSAC Inliers and Outliers (Threshold={threshold})")
-        plt.show()

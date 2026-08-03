@@ -1,0 +1,27 @@
+# Install with: pre-commit install
+# Run over everything with: pre-commit run --all-files
+#
+# The vendored MatchAnything tree is upstream code and is excluded here as well
+# as in the ruff config, so it is never reformatted by these hooks.
+exclude: ^src/tpsreg/Matchanything/
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
