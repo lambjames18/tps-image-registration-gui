@@ -1,0 +1,39 @@
+name: Feature request
+description: Suggest a capability or improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: >-
+        Describe the workflow that is currently difficult. Concrete detail about
+        the data and the analysis helps far more than a general request.
+      placeholder: >-
+        I align EBSD to BSE across ~200 slices. Placing points slice by slice is
+        the bottleneck; I would like to propagate points from one slice to the
+        next as a starting guess.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you have considered
+      description: Including other tools you currently use for this step.
+
+  - type: dropdown
+    id: contribute
+    attributes:
+      label: Would you be willing to contribute this?
+      options:
+        - "Yes, with some guidance"
+        - "Yes"
+        - "No"

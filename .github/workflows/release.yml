@@ -2,6 +2,11 @@ name: Release
 
 # Publishing runs on a version tag (e.g. v0.2.0). Push the tag only after CI is
 # green on the commit you are tagging.
+#
+# BEFORE PUBLISHING TO A PUBLIC INDEX: the vendored MatchAnything tree includes
+# files licensed CC BY-NC-SA 4.0 (non-commercial use only), so the built
+# artifacts are not purely MIT-licensed. See NOTICE.md. Resolve this before
+# tagging a public release.
 on:
   push:
     tags: ["v*"]
@@ -32,6 +37,16 @@ jobs:
 
       - name: Check metadata
         run: python -m twine check dist/*
+
+      # The artifacts carry non-commercially-licensed vendored code. Surface it
+      # in the run log so it cannot be published unnoticed.
+      - name: Report bundled third-party licenses
+        run: |
+          restricted=$(grep -rl "CC BY-NC-SA" src/tpsreg/Matchanything/ | wc -l)
+          if [ "$restricted" -gt 0 ]; then
+            echo "::warning::These artifacts bundle $restricted files licensed \
+          CC BY-NC-SA 4.0 (non-commercial use only). See NOTICE.md."
+          fi
 
       - name: Confirm the tag matches the packaged version
         if: startsWith(github.ref, 'refs/tags/v')
