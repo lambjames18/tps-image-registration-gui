@@ -6,27 +6,69 @@ This module contains the core business logic separated from the UI.
 
 import json
 import logging
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Dict, List, Self, Tuple, Optional, Any, Union
+from typing import Any, ClassVar, Self
 
 import h5py
 import numpy as np
-from scipy import ndimage as ndi
 from skimage import io, transform
 
-import torch
-from torchvision.transforms import InterpolationMode
-from torchvision.transforms.functional import resize as RESIZE
-from kornia.enhance import equalize_clahe
-
-import warnings
-
-warnings.filterwarnings("ignore", category=UserWarning)
-
-# Configure logging
 logger = logging.getLogger(__name__)
+
+
+def _read_numeric_table(path: Path, skip_header: int = 0) -> np.ndarray:
+    """Read a whitespace-delimited numeric table into a 2D float array.
+
+    ``np.loadtxt`` is several times faster than ``np.genfromtxt`` (5x on a
+    313k-row EBSD scan, far more on some platforms) but raises on rows it
+    cannot parse, where genfromtxt yields NaN. Scans do occasionally carry
+    blank or malformed entries, so fall back to genfromtxt when loadtxt
+    refuses; the caller zeroes any NaN either way.
+    """
+    try:
+        data = np.loadtxt(path, skiprows=skip_header, dtype=float, ndmin=2)
+    except ValueError:
+        logger.debug(
+            "Fast parse of %s failed; retrying with genfromtxt to tolerate "
+            "missing values",
+            path,
+        )
+        data = np.genfromtxt(path, skip_header=skip_header, dtype=float)
+        data = np.atleast_2d(data)
+
+    return data
+
+
+def _rescale_unit_interval(array: np.ndarray) -> np.ndarray:
+    """Rescale to [0, 1], mapping a constant-valued array to all zeros.
+
+    Plain min-max scaling divides by zero on constant images (a blank slice, a
+    saturated detector, a mask of a single phase), producing NaN that silently
+    becomes garbage on the cast to uint8.
+    """
+    array = array.astype(np.float32)
+    lo = array.min()
+    hi = array.max()
+    span = hi - lo
+    if span <= 0:
+        return np.zeros_like(array)
+    return (array - lo) / span
+
+
+def _try_import_torch():
+    """Return the torch module, or None when the optional extra is absent.
+
+    Torch is used to accelerate CLAHE and resizing. Every code path that uses it
+    has a scikit-image fallback, so the application remains fully functional on
+    a torch-free install.
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+    return torch
 
 
 class DataFormat(Enum):
@@ -54,18 +96,30 @@ class Point:
     y: float
     slice_idx: int = 0
 
-    def to_array(self) -> np.ndarray:
-        """Convert to numpy array [x, y] or [slice, x, y]."""
-        if self.slice_idx == 0:
-            return np.array([self.x, self.y])
-        return np.array([self.slice_idx, self.x, self.y])
+    def to_array(self, include_slice: bool = False) -> np.ndarray:
+        """Convert to a numpy array.
+
+        Parameters
+        ----------
+        include_slice:
+            When True return ``[slice, x, y]``, otherwise ``[x, y]``.
+
+        Notes
+        -----
+        The shape is determined solely by ``include_slice``. Deciding it from
+        ``slice_idx`` instead would silently return a 2-element array for
+        points on slice 0 of a 3D stack.
+        """
+        if include_slice:
+            return np.array([self.slice_idx, self.x, self.y])
+        return np.array([self.x, self.y])
 
 
 @dataclass
 class PointSet:
     """Collection of control points for an image."""
 
-    points: Dict[int, List[Point]] = field(default_factory=dict)
+    points: dict[int, list[Point]] = field(default_factory=dict)
 
     def add_point(self, point: Point) -> None:
         """Add a point to the set."""
@@ -74,21 +128,25 @@ class PointSet:
         self.points[point.slice_idx].append(point)
 
     def remove_point(self, slice_idx: int, point_idx: int) -> bool:
-        """Remove a point by index."""
-        try:
-            if slice_idx in self.points and 0 <= point_idx < len(
-                self.points[slice_idx]
-            ):
-                self.points[slice_idx].pop(point_idx)
-                logger.debug("Point index in range for removal")
-            else:
-                logger.debug("Point index out of range for removal")
-            return True
-        except Exception as e:
-            logger.error("Failed to remove point from PointSet.")
-            return False
+        """Remove a point by index.
 
-    def get_points_array(self, slice_idx: Optional[int] = None) -> np.ndarray:
+        Returns
+        -------
+        bool
+            True if a point was actually removed, False if the slice or index
+            does not exist.
+        """
+        if slice_idx in self.points and 0 <= point_idx < len(self.points[slice_idx]):
+            self.points[slice_idx].pop(point_idx)
+            logger.debug("Removed point %d from slice %d", point_idx, slice_idx)
+            return True
+
+        logger.debug(
+            "No point at index %d on slice %d; nothing removed", point_idx, slice_idx
+        )
+        return False
+
+    def get_points_array(self, slice_idx: int | None = None) -> np.ndarray:
         """Get points as numpy array for a specific slice or all slices."""
         if slice_idx is not None:
             if slice_idx not in self.points:
@@ -102,14 +160,14 @@ class PointSet:
                 all_points.append([slice_idx, point.x, point.y])
         return np.array(all_points) if all_points else np.array([])
 
-    def clear(self, slice_idx: Optional[int] = None) -> None:
+    def clear(self, slice_idx: int | None = None) -> None:
         """Clear points for a specific slice or all slices."""
         if slice_idx is not None:
             self.points.pop(slice_idx, None)
         else:
             self.points.clear()
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""
         return {
             str(slice_idx): [[p.x, p.y] for p in points]
@@ -117,7 +175,7 @@ class PointSet:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict) -> "PointSet":
+    def from_dict(cls, data: dict) -> "PointSet":
         """Create PointSet from dictionary."""
         point_set = cls()
         for slice_idx, points in data.items():
@@ -130,13 +188,13 @@ class PointSet:
 class ImageData:
     """Container for image data and metadata."""
 
-    data: Dict[str, np.ndarray]
+    data: dict[str, np.ndarray]
     resolution: float
-    paths: Dict[str, Path]  # Maps modality name to file path
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    paths: dict[str, Path]  # Maps modality name to file path
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
-    def shape(self) -> Tuple[int, ...]:
+    def shape(self) -> tuple[int, ...]:
         """Get the shape of the first data array."""
         if self.data:
             first_key = next(iter(self.data.keys()))
@@ -144,7 +202,7 @@ class ImageData:
         return (0, 0, 0)
 
     @property
-    def modalities(self) -> List[str]:
+    def modalities(self) -> list[str]:
         """Get list of available modalities."""
         return list(self.data.keys())
 
@@ -197,7 +255,7 @@ class ImageData:
 
         self.data[modality_name] = data
         self.paths[modality_name] = path
-        logger.info(f"Added modality '{modality_name}' from {path} to image data")
+        logger.info("Added modality '%s' from %s to image data", modality_name, path)
 
 
 class PointManager:
@@ -206,7 +264,7 @@ class PointManager:
     def __init__(self):
         self.source_points = PointSet()
         self.destination_points = PointSet()
-        self._history: List[Tuple[str, Any]] = []
+        self._history: list[tuple[str, Any]] = []
         self._history_index = -1
         self.max_history = 50
         logger.info("PointManager initialized")
@@ -216,42 +274,64 @@ class PointManager:
         self._save_state()
         self.source_points.add_point(src_point)
         self.destination_points.add_point(dst_point)
-        logger.debug(f"Added point pair: src={src_point}, dst={dst_point}")
+        logger.debug("Added point pair: src=%s, dst=%s", src_point, dst_point)
+
+    def add_source_point(self, point: Point) -> None:
+        """Add a single source point, recording it for undo.
+
+        Interactive placement adds one side at a time, so the two halves of a
+        pair cannot go through :meth:`add_point_pair`. Routing them here keeps
+        undo/redo working.
+        """
+        self._save_state()
+        self.source_points.add_point(point)
+        logger.debug("Added source point: %s", point)
+
+    def add_destination_point(self, point: Point) -> None:
+        """Add a single destination point, recording it for undo."""
+        self._save_state()
+        self.destination_points.add_point(point)
+        logger.debug("Added destination point: %s", point)
 
     def remove_point_pair(self, slice_idx: int, point_idx: int) -> bool:
-        """Remove a pair of corresponding points."""
-        self._save_state()
-        src_removed = self.source_points.remove_point(slice_idx, point_idx)
-        dst_removed = self.destination_points.remove_point(slice_idx, point_idx)
-        logger.debug(
-            f"Attempted to remove point pair at slice {slice_idx}, index {point_idx} with success {src_removed} and {dst_removed}"
-        )
-        success = src_removed and dst_removed
+        """Remove a pair of corresponding points.
 
-        if success:
-            logger.debug(f"Removed point pair at slice {slice_idx}, index {point_idx}")
-        else:
+        Source and destination points are kept in lockstep, so a pair is only
+        removed when the index is valid in both sets. Nothing is pushed onto
+        the undo stack when there is no such pair.
+        """
+        src_points = self.source_points.points.get(slice_idx, [])
+        dst_points = self.destination_points.points.get(slice_idx, [])
+
+        if not (0 <= point_idx < len(src_points) and 0 <= point_idx < len(dst_points)):
             logger.warning(
-                f"Failed to remove point pair at slice {slice_idx}, index {point_idx}"
+                "No point pair at slice %d index %d; nothing removed",
+                slice_idx,
+                point_idx,
             )
+            return False
 
-        return success
+        self._save_state()
+        self.source_points.remove_point(slice_idx, point_idx)
+        self.destination_points.remove_point(slice_idx, point_idx)
+        logger.debug("Removed point pair at slice %d, index %d", slice_idx, point_idx)
+        return True
 
     def get_point_pairs(
-        self, slice_idx: Optional[int] = None
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        self, slice_idx: int | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Get corresponding point pairs as numpy arrays."""
         src_points = self.source_points.get_points_array(slice_idx)
         dst_points = self.destination_points.get_points_array(slice_idx)
         return src_points, dst_points
 
-    def clear_points(self, slice_idx: Optional[int] = None) -> None:
+    def clear_points(self, slice_idx: int | None = None) -> None:
         """Clear all points or points for a specific slice."""
         self._save_state()
         self.source_points.clear(slice_idx)
         self.destination_points.clear(slice_idx)
         logger.info(
-            f"Cleared points for slice {slice_idx if slice_idx is not None else 'all'}"
+            "Cleared points for slice %s", slice_idx if slice_idx is not None else "all"
         )
 
     def save_to_file(self, src_path: Path, dst_path: Path) -> None:
@@ -262,14 +342,16 @@ class PointManager:
 
             if src_array.size > 0:
                 np.savetxt(src_path, src_array, fmt="%d", delimiter=" ")
-                logger.info(f"Saved {len(src_array)} source points to {src_path}")
+                logger.info("Saved %s source points to %s", len(src_array), src_path)
 
             if dst_array.size > 0:
                 np.savetxt(dst_path, dst_array, fmt="%d", delimiter=" ")
-                logger.info(f"Saved {len(dst_array)} destination points to {dst_path}")
+                logger.info(
+                    "Saved %s destination points to %s", len(dst_array), dst_path
+                )
 
         except Exception as e:
-            logger.error(f"Failed to save points: {e}")
+            logger.error("Failed to save points: %s", e)
             raise
 
     def load_source_from_file(
@@ -280,9 +362,9 @@ class PointManager:
             self.source_points = self._load_points_from_file(
                 src_path, current_slice, is_2d
             )
-            logger.info(f"Loaded source points from {src_path}")
+            logger.info("Loaded source points from %s", src_path)
         except Exception as e:
-            logger.error(f"Failed to load source points: {e}")
+            logger.error("Failed to load source points: %s", e)
             raise
 
     def load_destination_from_file(
@@ -293,9 +375,9 @@ class PointManager:
             self.destination_points = self._load_points_from_file(
                 dst_path, current_slice, is_2d
             )
-            logger.info(f"Loaded destination points from {dst_path}")
+            logger.info("Loaded destination points from %s", dst_path)
         except Exception as e:
-            logger.error(f"Failed to load destination points: {e}")
+            logger.error("Failed to load destination points: %s", e)
             raise
 
     def load_from_json(self, json_data: dict) -> None:
@@ -309,7 +391,7 @@ class PointManager:
             )
             logger.info("Loaded points from JSON data")
         except Exception as e:
-            logger.error(f"Failed to load points from JSON: {e}")
+            logger.error("Failed to load points from JSON: %s", e)
             raise
 
     def _load_points_from_file(
@@ -334,7 +416,7 @@ class PointManager:
         point_set = PointSet()
 
         if not path.exists():
-            logger.warning(f"Point file does not exist: {path}")
+            logger.warning("Point file does not exist: %s", path)
             return point_set
 
         try:
@@ -350,23 +432,24 @@ class PointManager:
                 # 2D points (x, y) - apply to current slice
                 for x, y in data:
                     point_set.add_point(Point(int(x), int(y), current_slice))
-                logger.info(f"Loaded {len(data)} 2D points to slice {current_slice}")
+                logger.info("Loaded %s 2D points to slice %s", len(data), current_slice)
 
             elif data.shape[1] == 3:
                 # 3D points (slice_idx, x, y)
                 if is_2d:
                     # Ignore slice index for 2D data, add all to slice 0
-                    for slice_idx, x, y in data:
+                    for _slice_idx, x, y in data:
                         point_set.add_point(Point(int(x), int(y), 0))
                     logger.info(
-                        f"Loaded {len(data)} points to slice 0 (2D data, slice indices ignored)"
+                        "Loaded %s points to slice 0 (2D data, slice indices ignored)",
+                        len(data),
                     )
                 else:
                     # Use slice indices for 3D data
                     for slice_idx, x, y in data:
                         point_set.add_point(Point(int(x), int(y), int(slice_idx)))
                     logger.info(
-                        f"Loaded {len(data)} 3D points to their respective slices"
+                        "Loaded %s 3D points to their respective slices", len(data)
                     )
             else:
                 raise ValueError(
@@ -374,7 +457,7 @@ class PointManager:
                 )
 
         except Exception as e:
-            logger.error(f"Error reading point file {path}: {e}")
+            logger.error("Error reading point file %s: %s", path, e)
             raise
 
         return point_set
@@ -389,57 +472,87 @@ class PointManager:
                     point_set.add_point(Point(x, y, int(slice_idx)))
 
         except Exception as e:
-            logger.error(f"Error loading points from json: {e}")
+            logger.error("Error loading points from json: %s", e)
             raise
 
         return point_set
 
-    def _save_state(self) -> None:
-        """Save current state for undo functionality."""
-        state = {
+    def _snapshot(self) -> dict[str, dict]:
+        """Capture the current points as a plain, copyable dict."""
+        return {
             "source": self.source_points.to_dict(),
             "destination": self.destination_points.to_dict(),
         }
 
-        # Remove any states after current index
-        self._history = self._history[: self._history_index + 1]
+    def _restore(self, state: dict[str, dict]) -> None:
+        """Replace the current points with a previously captured snapshot."""
+        self.source_points = PointSet.from_dict(state["source"])
+        self.destination_points = PointSet.from_dict(state["destination"])
 
-        # Add new state
-        self._history.append(("state", state))
+    def _save_state(self) -> None:
+        """Record the pre-mutation state so the change can be undone.
 
-        # Limit history size
+        Called by every mutating operation *before* it mutates, so
+        ``_history[_history_index]`` always holds the state as it was before
+        the most recent change. The post-change state is only appended lazily,
+        by :meth:`undo`, which is what gives redo somewhere to return to.
+        """
+        # Any redo branch is invalidated by a fresh change.
+        del self._history[self._history_index + 1 :]
+
+        self._history.append(self._snapshot())
+
         if len(self._history) > self.max_history:
             self._history.pop(0)
-        else:
-            self._history_index += 1
+
+        self._history_index = len(self._history) - 1
 
     def undo(self) -> bool:
-        """Undo last operation."""
-        if self._history_index > 0:
-            self._history_index -= 1
-            state = self._history[self._history_index][1]
-            self.source_points = PointSet.from_dict(state["source"])
-            self.destination_points = PointSet.from_dict(state["destination"])
-            logger.debug("Undid last operation")
-            return True
-        return False
+        """Revert the most recent change.
+
+        Returns
+        -------
+        bool
+            True if a change was reverted, False if there was nothing to undo.
+        """
+        if self._history_index < 0:
+            logger.debug("Nothing to undo")
+            return False
+
+        # The live state has not been recorded yet; append it so redo can
+        # bring it back.
+        if self._history_index == len(self._history) - 1:
+            self._history.append(self._snapshot())
+
+        self._restore(self._history[self._history_index])
+        self._history_index -= 1
+        logger.debug("Undid last operation")
+        return True
 
     def redo(self) -> bool:
-        """Redo last undone operation."""
-        if self._history_index < len(self._history) - 1:
-            self._history_index += 1
-            state = self._history[self._history_index][1]
-            self.source_points = PointSet.from_dict(state["source"])
-            self.destination_points = PointSet.from_dict(state["destination"])
-            logger.debug("Redid operation")
-            return True
-        return False
+        """Reapply the most recently undone change.
+
+        Returns
+        -------
+        bool
+            True if a change was reapplied, False if there was nothing to redo.
+        """
+        target = self._history_index + 2
+        if target >= len(self._history):
+            logger.debug("Nothing to redo")
+            return False
+
+        self._history_index += 1
+        self._restore(self._history[target])
+        logger.debug("Redid operation")
+        return True
 
 
 class PointAutoIdentifier:
     """Automatically identifies corresponding control points between images."""
 
-    ENGINES = {
+    #: Maps a detection method name to the static method that implements it.
+    ENGINES: ClassVar[dict[str, str]] = {
         "sift": "detect_points_sift",
         "matchanything": "detect_points_matchanything",
     }
@@ -456,7 +569,7 @@ class PointAutoIdentifier:
         destination_image: np.ndarray,
         method: str = "sift",
         **kwargs,
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Identify corresponding points between source and destination images.
 
         Args:
@@ -468,15 +581,24 @@ class PointAutoIdentifier:
         Returns:
             Tuple of numpy arrays: (source_points, destination_points)
         """
-        loader_method = getattr(cls, cls.ENGINES[method], None)
-        if loader_method is None:
-            raise ValueError(f"Unsupported point identification method: {method}")
-        logger.info(f"Identifying points using method '{method}'")
+        if method not in cls.ENGINES:
+            raise ValueError(
+                f"Unsupported point identification method: {method!r}. "
+                f"Available methods: {sorted(cls.ENGINES)}"
+            )
+
+        loader_method = getattr(cls, cls.ENGINES[method])
+        logger.info("Identifying points using method '%s'", method)
+
         if method == "matchanything":
+            # Pop rather than get: passing checkpoint_path explicitly *and*
+            # forwarding it inside **kwargs raises "got multiple values".
+            kwargs = dict(kwargs)
+            checkpoint_path = kwargs.pop("checkpoint_path", None) or cls.checkpoint_path
             return loader_method(
                 source_image,
                 destination_image,
-                checkpoint_path=kwargs.get("checkpoint_path", cls.checkpoint_path),
+                checkpoint_path=checkpoint_path,
                 **kwargs,
             )
         return loader_method(source_image, destination_image, **kwargs)
@@ -484,7 +606,7 @@ class PointAutoIdentifier:
     @staticmethod
     def detect_points_sift(
         source_image: np.ndarray, destination_image: np.ndarray, **kwargs
-    ) -> Tuple[np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Detect matching points between images using SIFT keypoint detector.
 
         Args:
@@ -498,9 +620,9 @@ class PointAutoIdentifier:
             Tuple of numpy arrays: (source_points, destination_points)
         """
         from skimage.feature import SIFT, match_descriptors
-        from skimage.transform import AffineTransform
         from skimage.filters import gaussian
-        from ransac import ransac_filter as ransac
+
+        from tpsreg.ransac import ransac_filter as ransac
 
         # Get parameters
         max_ratio = kwargs.get("max_ratio", 0.75)
@@ -529,13 +651,9 @@ class PointAutoIdentifier:
         source_gray = gaussian(source_gray, sigma=sigma)
         destination_gray = gaussian(destination_gray, sigma=sigma)
 
-        # Normalize to 0-1 range for SIFT
-        source_gray = (source_gray - source_gray.min()) / (
-            source_gray.max() - source_gray.min()
-        )
-        destination_gray = (destination_gray - destination_gray.min()) / (
-            destination_gray.max() - destination_gray.min()
-        )
+        # Normalize to 0-1 range for SIFT, tolerating featureless input.
+        source_gray = _rescale_unit_interval(source_gray)
+        destination_gray = _rescale_unit_interval(destination_gray)
 
         try:
             # Detect SIFT keypoints and descriptors
@@ -549,12 +667,14 @@ class PointAutoIdentifier:
             keypoints_dst = sift_detector.keypoints
             descriptors_dst = sift_detector.descriptors
 
-            logger.info(f"Detected {len(keypoints_src)} keypoints in source image")
-            logger.info(f"Detected {len(keypoints_dst)} keypoints in destination image")
+            logger.info("Detected %s keypoints in source image", len(keypoints_src))
+            logger.info(
+                "Detected %s keypoints in destination image", len(keypoints_dst)
+            )
 
             if len(keypoints_src) < min_matches or len(keypoints_dst) < min_matches:
                 logger.warning(
-                    f"Insufficient keypoints detected (need at least {min_matches})"
+                    "Insufficient keypoints detected (need at least %s)", min_matches
                 )
                 return np.array([]), np.array([])
 
@@ -563,11 +683,11 @@ class PointAutoIdentifier:
                 descriptors_src, descriptors_dst, max_ratio=max_ratio, cross_check=True
             )
 
-            logger.info(f"Found {len(matches)} initial matches")
+            logger.info("Found %s initial matches", len(matches))
 
             if len(matches) < min_matches:
                 logger.warning(
-                    f"Insufficient matches found (need at least {min_matches})"
+                    "Insufficient matches found (need at least %s)", min_matches
                 )
                 return np.array([]), np.array([])
 
@@ -588,14 +708,17 @@ class PointAutoIdentifier:
                 src_points = src_points[inliers]
                 dst_points = dst_points[inliers]
 
-                logger.info(f"After RANSAC filtering: {len(src_points)} inlier matches")
+                logger.info(
+                    "After RANSAC filtering: %s inlier matches", len(src_points)
+                )
 
             except Exception as e:
-                logger.warning(f"RANSAC filtering failed: {e}, using all matches")
+                logger.warning("RANSAC filtering failed: %s, using all matches", e)
 
             if len(src_points) < min_matches:
                 logger.warning(
-                    f"Insufficient inlier matches after RANSAC (need at least {min_matches})"
+                    "Insufficient inlier matches after RANSAC (need at least %s)",
+                    min_matches,
                 )
                 return np.array([]), np.array([])
 
@@ -614,21 +737,21 @@ class PointAutoIdentifier:
                 top_indices = sorted_indices[:num_samples]
                 src_points = src_points[top_indices]
                 dst_points = dst_points[top_indices]
-                logger.info(f"Selected top {num_samples} matches based on distance")
+                logger.info("Selected top %s matches based on distance", num_samples)
 
             return src_points.astype(int), dst_points.astype(int)
 
         except Exception as e:
-            logger.error(f"SIFT point detection failed: {e}")
+            logger.error("SIFT point detection failed: %s", e)
             return np.array([]), np.array([])
 
     @staticmethod
     def detect_points_matchanything(
         source_image: np.ndarray,
         destination_image: np.ndarray,
-        checkpoint_path: str = None,
+        checkpoint_path: str | None = None,
         **kwargs,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Detect matching points between images using ROMA (MatchAnything).
 
         Args:
@@ -649,19 +772,21 @@ class PointAutoIdentifier:
             Tuple of (source_points, destination_points) as numpy arrays (Nx2)
         """
         try:
-            from roma_matcher import create_matcher, apply_matcher
+            from tpsreg.roma_matcher import apply_matcher, create_matcher
 
             # If matcher is not cached, create it
             if PointAutoIdentifier._matchanything_matcher is None:
                 PointAutoIdentifier._matchanything_matcher = create_matcher(
                     checkpoint_path=checkpoint_path
                 )
-            
+
             num_samples = kwargs.get("num_samples", 10)
-            PointAutoIdentifier._matchanything_matcher.config["sample"] = {"n_sample": num_samples}
+            PointAutoIdentifier._matchanything_matcher.config["sample"] = {
+                "n_sample": num_samples
+            }
             matcher = PointAutoIdentifier._matchanything_matcher
 
-            src_points, dst_points, confidences = apply_matcher(
+            src_points, dst_points, _confidences = apply_matcher(
                 matcher,
                 source_image,
                 destination_image,
@@ -671,14 +796,13 @@ class PointAutoIdentifier:
                 ransac_max_trials=kwargs.get("ransac_max_trials", 100),
             )
 
-            logger.info(f"ROMA detected {len(src_points)} matches")
+            logger.info("ROMA detected %s matches", len(src_points))
 
             if len(src_points) < 4:
                 logger.warning(
                     "Insufficient matches found (< 4). Cannot estimate transformation."
                 )
                 return np.array([]), np.array([])
-
 
             # Take the top N matches based on confidence
             """
@@ -743,26 +867,25 @@ class PointAutoIdentifier:
                         dst_points = dst_points[:num_samples]
                         confidences = confidences[:num_samples]
 
-                logger.info(
-                    f"Selected top {num_samples} matches (min confidence: {confidences[-1]:.4f})"
-                )
+                logger.info("Selected top %s matches (min confidence: %.4f)", num_samples, confidences[-1])
             """
 
             return src_points.astype(int), dst_points.astype(int)
 
         except ImportError as e:
             logger.error(
-                f"Failed to import ROMA matcher. Make sure roma_matcher.py is available: {e}"
+                "Failed to import ROMA matcher. Make sure roma_matcher.py is available: %s",
+                e,
             )
             return np.array([]), np.array([])
         except FileNotFoundError as e:
-            logger.error(f"ROMA checkpoint not found: {e}")
+            logger.error("ROMA checkpoint not found: %s", e)
             logger.error(
                 "Please download weights from: https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view"
             )
             return np.array([]), np.array([])
         except Exception as e:
-            logger.error(f"Matchanything point detection failed: {e}")
+            logger.error("Matchanything point detection failed: %s", e)
             import traceback
 
             logger.error(traceback.format_exc())
@@ -774,13 +897,13 @@ class PointAutoIdentifier:
         cls.checkpoint_path = path
         # Clear cached matcher to reload with new checkpoint
         cls._matchanything_matcher = None
-        logger.info(f"Set MatchAnything checkpoint path to: {path}")
+        logger.info("Set MatchAnything checkpoint path to: %s", path)
 
 
 class ImageLoader:
     """Handles loading and preprocessing of various image formats."""
 
-    SUPPORTED_FORMATS = {
+    SUPPORTED_FORMATS: ClassVar[dict[str, str]] = {
         ".ang": "load_ang",
         ".h5": "load_h5",
         ".dream3d": "load_dream3d",
@@ -794,9 +917,9 @@ class ImageLoader:
     @classmethod
     def load(
         cls,
-        path: Union[str, Path, List, Tuple],
+        path: str | Path | list | tuple,
         resolution: float = 1.0,
-        modality_name: str = None,
+        modality_name: str | None = None,
     ) -> ImageData:
         """Load image data from file."""
         is_list = type(path) in [list, tuple]
@@ -831,13 +954,13 @@ class ImageLoader:
                 suffix = _p.suffix.lower()
                 if suffix != first_suffix:
                     raise ValueError(
-                        f"When prividing a list of images, all images must have the same extension"
+                        "When prividing a list of images, all images must have the same extension"
                     )
 
                 path[i] = _p
 
         try:
-            logger.info(f"Loading {suffix} file(s)")
+            logger.info("Loading %s file(s)", suffix)
 
             # Call the appropriate loader method
             data, res, metadata = loader_method(path, modality_name)
@@ -871,13 +994,13 @@ class ImageLoader:
             return ImageData(data=data, resolution=res, paths=paths, metadata=metadata)
 
         except Exception as e:
-            logger.error(f"Failed to load {path}: {e}")
+            logger.error("Failed to load %s: %s", path, e)
             raise
 
     @staticmethod
     def load_ang(
-        path: Path, modality_name: str = None
-    ) -> Tuple[Dict[str, np.ndarray], float, Dict[str, Any]]:
+        path: Path, modality_name: str | None = None
+    ) -> tuple[dict[str, np.ndarray], float, dict[str, Any]]:
         """Load ANG file format."""
         col_names = None
         header = ""
@@ -885,7 +1008,7 @@ class ImageLoader:
         ncols = nrows = 0
         res = 1.0
 
-        with open(path, "r") as f:
+        with open(path) as f:
             for line in f:
                 header += line
                 if "NCOLS_ODD" in line:
@@ -905,12 +1028,12 @@ class ImageLoader:
         if col_names is None:
             col_names = ["phi1", "PHI", "phi2", "x", "y", "IQ", "CI", "Phase index"]
 
-        raw_data = np.genfromtxt(path, skip_header=header_lines, dtype=float)
+        raw_data = _read_numeric_table(path, skip_header=header_lines)
         raw_data[np.isnan(raw_data)] = 0.0
 
         if raw_data.shape[0] != ncols * nrows:
             raise ValueError(
-                f"Data size mismatch: expected {ncols*nrows}, got {raw_data.shape[0]}"
+                f"Data size mismatch: expected {ncols * nrows}, got {raw_data.shape[0]}"
             )
 
         n_entries = raw_data.shape[-1]
@@ -920,7 +1043,7 @@ class ImageLoader:
         for i, name in enumerate(col_names[:n_entries]):
             arr = data[:, :, i]
             arr = np.fliplr(np.rot90(arr, k=3)).T
-            out[name] = arr.reshape((1,) + arr.shape + (1,))
+            out[name] = arr.reshape((1, *arr.shape, 1))
 
         # Create Euler angles array
         if all(k in out for k in ["phi1", "PHI", "phi2"]):
@@ -933,14 +1056,14 @@ class ImageLoader:
 
     @staticmethod
     def load_h5(
-        path: Path, modality_name: str = None
-    ) -> Tuple[Dict[str, np.ndarray], float, Dict[str, Any]]:
+        path: Path, modality_name: str | None = None
+    ) -> tuple[dict[str, np.ndarray], float, dict[str, Any]]:
         """Load H5 file format."""
         with h5py.File(path, "r") as h5:
             # Find the EBSD data entry
-            if "1" in h5.keys():
+            if "1" in h5:
                 entry = "1"
-            elif "Scan 1" in h5.keys():
+            elif "Scan 1" in h5:
                 entry = "Scan 1"
             else:
                 raise ValueError("Could not find EBSD data in the H5 file")
@@ -952,9 +1075,9 @@ class ImageLoader:
 
             keys = list(ebsd_data.keys())
             data = {
-                key.upper()
-                .replace(" ", "-"): ebsd_data[key][...]
-                .reshape(1, nrows, ncols, -1)
+                key.upper().replace(" ", "-"): ebsd_data[key][...].reshape(
+                    1, nrows, ncols, -1
+                )
                 for key in keys
             }
 
@@ -969,16 +1092,16 @@ class ImageLoader:
 
     @staticmethod
     def load_dream3d(
-        path: Path, modality_name: str = None
-    ) -> Tuple[Dict[str, np.ndarray], float, Dict[str, Any]]:
+        path: Path, modality_name: str | None = None
+    ) -> tuple[dict[str, np.ndarray], float, dict[str, Any]]:
         """Load DREAM3D file format."""
         with h5py.File(path, "r") as h5:
-            if "DataStructure" in h5.keys():
+            if "DataStructure" in h5:
                 ebsd_data = h5["DataStructure/DataContainer/CellData"]
                 res = np.asarray(
                     h5["DataStructure/DataContainer"].attrs.get("_SPACING")
                 )[1]
-            elif "DataContainers" in h5.keys():
+            elif "DataContainers" in h5:
                 ebsd_data = h5["DataContainers/ImageDataContainer/CellData"]
                 res = h5["DataContainers/ImageDataContainer/_SIMPL_GEOMETRY/SPACING"][
                     ...
@@ -995,18 +1118,18 @@ class ImageLoader:
     @staticmethod
     def load_image(
         path: Path, modality_name: str = "Intensity"
-    ) -> Tuple[Dict[str, np.ndarray], None]:
+    ) -> tuple[dict[str, np.ndarray], None]:
         """Load standard image formats with optional modality name."""
         im = io.imread(path, as_gray=True).astype(np.float32)
 
-        # Normalize to 0-255 range
-        im = np.around((im - np.min(im)) / (np.max(im) - np.min(im)) * 255, 0)
-        im = im.astype(np.uint8)
+        # Normalize to 0-255. A constant image (blank slice, saturated
+        # detector) has zero range and would otherwise become NaN.
+        im = np.around(_rescale_unit_interval(im) * 255, 0).astype(np.uint8)
 
         if im.ndim == 2:
             im = im.reshape((im.shape[0], im.shape[1], 1))
 
-        im = im.reshape((1,) + im.shape)
+        im = im.reshape((1, *im.shape))
 
         metadata = {"dataformat": DataFormat.IMAGE.value}
         return {modality_name: im}, None, metadata
@@ -1014,7 +1137,7 @@ class ImageLoader:
     @staticmethod
     def load_images(
         paths: list, modality_name: str = "Intensity"
-    ) -> Tuple[Dict[str, np.ndarray], None, Dict[str, Any]]:
+    ) -> tuple[dict[str, np.ndarray], None, dict[str, Any]]:
         """Load a list of standard image formats."""
         images = np.array(
             [
@@ -1025,7 +1148,7 @@ class ImageLoader:
 
         # Put in a channel axis if needed
         if images.ndim == 3:
-            images = images.reshape(images.shape + (1,))
+            images = images.reshape((*images.shape, 1))
 
         # Normalize to 0-255 range
         # mn = np.min(images, axis=(1, 2, 3), keepdims=True)
@@ -1041,7 +1164,7 @@ class ImageLoader:
 class ImageWriter:
     """Handles saving images to disk."""
 
-    SUPPORTED_FORMATS = {
+    SUPPORTED_FORMATS: ClassVar[dict[str, str]] = {
         ".ang": "save_ang",
         ".h5": "save_h5",
         ".dream3d": "save_dream3d",
@@ -1055,7 +1178,7 @@ class ImageWriter:
     @classmethod
     def save(
         cls,
-        image_data: Union[np.ndarray, Dict[str, np.ndarray]],
+        image_data: np.ndarray | dict[str, np.ndarray],
         path: Path,
         *args,
         **kwargs,
@@ -1071,7 +1194,7 @@ class ImageWriter:
                 raise ValueError(f"Unsupported file format: {ext}")
 
         except Exception as e:
-            logger.error(f"Failed to save image to {path}: {e}")
+            logger.error("Failed to save image to %s: %s", path, e)
             raise
 
     @staticmethod
@@ -1079,16 +1202,16 @@ class ImageWriter:
         """Save image to file."""
         try:
             io.imsave(path, image_data)
-            logger.info(f"Saved image to {path}")
+            logger.info("Saved image to %s", path)
         except Exception as e:
-            logger.error(f"Failed to save image to {path}: {e}")
+            logger.error("Failed to save image to %s: %s", path, e)
             raise
 
     @staticmethod
     def save_dream3d(
-        image_data: Dict[str, np.ndarray],
-        path: Union[str, Path],
-        original_path: Union[str, Path],
+        image_data: dict[str, np.ndarray],
+        path: str | Path,
+        original_path: str | Path,
     ) -> None:
         """Save image data to DREAM3D format."""
         # Ensure paths are Path objects
@@ -1118,7 +1241,7 @@ class ImageWriter:
         # Replace the Dream3D file name in the XDMF file
         def replace_dream3d_filename_in_xdmf(xdmf_path, new_dream3d_filename):
             """Replaces the DREAM3D filename in the XDMF file with a new filename."""
-            with open(xdmf_path, "r") as file:
+            with open(xdmf_path) as file:
                 xdmf_content = file.readlines()
 
             with open(xdmf_path, "w") as file:
@@ -1181,7 +1304,7 @@ class ImageWriter:
             dset = h5group.create_dataset(name, data=data, dtype=dtype)
             dset.attrs["ComponentDimensions"] = np.uint64([data.shape[-1]])
             dset.attrs["Tuple Axis Dimensions"] = np.bytes_(
-                f"x={str(data.shape[2])},y={str(data.shape[1])},z={str(data.shape[0])} "
+                f"x={data.shape[2]!s},y={data.shape[1]!s},z={data.shape[0]!s} "
             )
             dset.attrs["DataArrayVersion"] = np.int32([2])
             dset.attrs["ObjectType"] = np.bytes_(dream3d_dtypes[dtype])
@@ -1192,7 +1315,7 @@ class ImageWriter:
         def add_dataset_to_xdmf(xdmf_path, dataset_name, data_array):
             """Adds a new dataset to an existing XDMF file."""
             # Read the existing XDMF file
-            with open(xdmf_path, "r") as file:
+            with open(xdmf_path) as file:
                 xdmf_content = file.readlines()
 
             # Break the xdmf content into lines for easier manipulation
@@ -1200,7 +1323,7 @@ class ImageWriter:
 
             # Make sure the shape of the data_array is compatible
             if data_array.ndim == 3:
-                data_array = data_array.reshape(data_array.shape + (1,))
+                data_array = data_array.reshape((*data_array.shape, 1))
             elif data_array.ndim < 3:
                 raise ValueError("data_array must be at least 3-dimensional")
             elif data_array.ndim > 4:
@@ -1287,14 +1410,14 @@ class ImageWriter:
                     dataset[...] = data
                 else:
                     # Create new dataset
-                    logger.info(f"Creating new dataset for modality '{modality}'")
+                    logger.info("Creating new dataset for modality '%s'", modality)
                     # Add dataset to H5 and XDMF
                     add_dataset_to_h5(cell_data, modality, data)
                     add_dataset_to_xdmf(xdmf_path, modality, data)
 
     @staticmethod
     def save_ang(
-        image_data: Dict[str, np.ndarray],
+        image_data: dict[str, np.ndarray],
         path: Path,
         ang_header: str,
         resolution: float,
@@ -1312,7 +1435,7 @@ class ImageWriter:
 
         col_names = list(image_data.keys())
         data_out = []
-        for i, key in enumerate(col_names):
+        for _i, key in enumerate(col_names):
             data_out.append(image_data[key].reshape(-1, 1).astype(np.float32))
         data_out = np.hstack(data_out)
         np.savetxt(
@@ -1326,7 +1449,7 @@ class ImageWriter:
 
     @staticmethod
     def save_h5(
-        image_data: Dict[str, np.ndarray], path: Path, resolution: float
+        image_data: dict[str, np.ndarray], path: Path, resolution: float
     ) -> None:
         """Save image data to HDF5 format."""
         raise NotImplementedError("Saving to HDF5 format is not yet implemented.")
@@ -1358,14 +1481,14 @@ class TransformManager:
         src_points: np.ndarray,
         dst_points: np.ndarray,
         transform_type: TransformType,
-        output_shape: Tuple[int, int],
+        output_shape: tuple[int, int],
     ) -> Any:
         """Estimate transformation parameters from point correspondences."""
         self._check_valid_points(src_points, dst_points)
 
         try:
             # Import TPS here to avoid circular dependency
-            from tps import ThinPlateSplineTransform
+            from tpsreg.tps import ThinPlateSplineTransform
 
             affine_only = transform_type == TransformType.TPS_AFFINE
             tform = ThinPlateSplineTransform(affine_only=affine_only)
@@ -1376,11 +1499,11 @@ class TransformManager:
             )
 
             self._last_transform = tform
-            logger.debug(f"Estimated {transform_type.value} transform")
+            logger.debug("Estimated %s transform", transform_type.value)
             return tform
 
         except Exception as e:
-            logger.error(f"Failed to estimate transform: {e}")
+            logger.error("Failed to estimate transform: %s", e)
             raise
 
     def estimate_transform_stack(
@@ -1388,16 +1511,38 @@ class TransformManager:
         src_points: np.ndarray,
         dst_points: np.ndarray,
         transform_type: TransformType,
-        output_shape: Tuple[int, int],
-        n_slices: int = None,
-    ) -> Dict[int, Any]:
-        """Estimate transformations for a stack of images based on point correspondences."""
+        output_shape: tuple[int, int],
+        n_slices: int | None = None,
+    ) -> dict[int, Any]:
+        """Estimate transformations for every slice of a stack.
+
+        Slices without control points get parameters linearly interpolated from
+        the nearest bracketing slices that do; slices outside that range reuse
+        the closest available transform.
+
+        Parameters
+        ----------
+        src_points, dst_points:
+            Arrays of shape (N, 3) holding ``[slice, x, y]``.
+        transform_type:
+            Which transform to fit.
+        output_shape:
+            ``(height, width)`` of the destination grid.
+        n_slices:
+            Total number of slices in the stack. Defaults to one past the
+            highest slice index that carries points.
+        """
         self._check_valid_points(src_points, dst_points)
 
-        from tps import ThinPlateSplineTransform
+        from tpsreg.tps import ThinPlateSplineTransform
 
         # Get unique slices with points
         slice_indices = np.unique(src_points[:, 0]).astype(int)
+
+        if n_slices is None:
+            # Without an explicit stack depth, cover every slice that has points.
+            n_slices = int(slice_indices.max()) + 1
+            logger.debug("n_slices not supplied; inferred %d from points", n_slices)
 
         # Estimate transforms for each slice with points
         transforms = {}
@@ -1437,14 +1582,14 @@ class TransformManager:
                 elif upper_slices:
                     transforms[i] = transforms[min(upper_slices)]
 
-        logger.info(f"Estimated transforms for {len(transforms)} slices in the stack")
+        logger.info("Estimated transforms for %s slices in the stack", len(transforms))
         return transforms
 
     def apply_transform(
         self,
         image: np.ndarray,
         tform: Any,
-        output_shape: Optional[Tuple[int, int]] = None,
+        output_shape: tuple[int, int] | None = None,
         order: int = 0,
     ) -> np.ndarray:
         """Apply transformation to an image."""
@@ -1461,11 +1606,11 @@ class TransformManager:
                 order=order,
             )
 
-            logger.debug(f"Applied transform to image of shape {image.shape}")
+            logger.debug("Applied transform to image of shape %s", image.shape)
             return warped
 
         except Exception as e:
-            logger.error(f"Failed to apply transform: {e}")
+            logger.error("Failed to apply transform: %s", e)
             raise
 
     def apply_transform_stack(
@@ -1474,13 +1619,12 @@ class TransformManager:
         src_points: np.ndarray = None,
         dst_points: np.ndarray = None,
         transform_type: TransformType = TransformType.TPS,
-        output_shape: Optional[Tuple[int, int]] = None,
+        output_shape: tuple[int, int] | None = None,
         order: int = 0,
-        transforms: Optional[Dict[int, Any]] = None,
+        transforms: dict[int, Any] | None = None,
         return_transforms: bool = False,
     ) -> np.ndarray:
         """Apply transformation to a stack of images with interpolation between slices."""
-        from tps import ThinPlateSplineTransform
 
         if output_shape is None:
             output_shape = image_stack.shape[1:3]
@@ -1516,7 +1660,7 @@ class TransformManager:
                 image_stack[i], tform, output_shape, order
             )
 
-        logger.info(f"Applied transform to stack of {image_stack.shape[0]} images")
+        logger.info("Applied transform to stack of %s images", image_stack.shape[0])
         if return_transforms:
             return output_stack, transforms
         return output_stack
@@ -1537,119 +1681,273 @@ class TransformManager:
             else:
                 raise ValueError(f"Unsupported export format: {format}")
 
-            logger.info(f"Exported transform to {path}")
+            logger.info("Exported transform to %s", path)
 
         except Exception as e:
-            logger.error(f"Failed to export transform: {e}")
+            logger.error("Failed to export transform: %s", e)
             raise
 
 
 class ImageProcessor:
-    """Handles image processing operations."""
+    """Handles image processing operations.
+
+    Torch/kornia are used when installed because they are markedly faster on
+    large image stacks. Each operation falls back to an equivalent scikit-image
+    implementation so a core install stays fully functional.
+    """
 
     @staticmethod
     def apply_clahe(
         image: np.ndarray,
         clip_limit: float = 20.0,
-        kernel_size: Tuple[int, int] = (8, 8),
+        kernel_size: tuple[int, int] = (8, 8),
     ) -> np.ndarray:
-        """Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)."""
-        try:
-            tensor = torch.tensor(image).float()
-            if tensor.ndim == 2:
-                tensor = tensor.unsqueeze(0).unsqueeze(0)
-            elif tensor.ndim == 3:
-                tensor = tensor.permute(2, 0, 1).unsqueeze(0)
-            elif tensor.ndim == 4:
-                tensor = tensor.permute(0, 3, 1, 2).contiguous()
+        """Apply CLAHE (Contrast Limited Adaptive Histogram Equalization).
 
-            tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min())
-            tensor = equalize_clahe(tensor, clip_limit, kernel_size)
-            tensor = torch.round(
-                255 * (tensor - tensor.min()) / (tensor.max() - tensor.min())
+        Parameters
+        ----------
+        image:
+            Array of shape (H, W), (H, W, C) or (N, H, W, C).
+        clip_limit:
+            Contrast limit passed to the underlying CLAHE implementation.
+        kernel_size:
+            Number of tiles along each axis.
+
+        Returns
+        -------
+        np.ndarray
+            uint8 array with the same shape as the input.
+        """
+        torch = _try_import_torch()
+        if torch is not None:
+            try:
+                return ImageProcessor._apply_clahe_torch(
+                    torch, image, clip_limit, kernel_size
+                )
+            except ImportError:
+                logger.debug("kornia unavailable; using scikit-image CLAHE")
+            except Exception:
+                logger.warning(
+                    "Torch CLAHE failed; falling back to scikit-image", exc_info=True
+                )
+        return ImageProcessor._apply_clahe_skimage(image, clip_limit, kernel_size)
+
+    @staticmethod
+    def _apply_clahe_torch(
+        torch,
+        image: np.ndarray,
+        clip_limit: float,
+        kernel_size: tuple[int, int],
+    ) -> np.ndarray:
+        """Kornia-backed CLAHE. Raises ImportError when kornia is missing."""
+        from kornia.enhance import equalize_clahe
+
+        original_shape = image.shape
+        tensor = torch.tensor(np.asarray(image)).float()
+        if tensor.ndim == 2:
+            tensor = tensor.unsqueeze(0).unsqueeze(0)
+        elif tensor.ndim == 3:
+            tensor = tensor.permute(2, 0, 1).unsqueeze(0)
+        elif tensor.ndim == 4:
+            tensor = tensor.permute(0, 3, 1, 2).contiguous()
+
+        span = tensor.max() - tensor.min()
+        if span <= 0:
+            return np.zeros(original_shape, dtype=np.uint8)
+
+        tensor = (tensor - tensor.min()) / span
+        tensor = equalize_clahe(tensor, clip_limit, kernel_size)
+
+        span = tensor.max() - tensor.min()
+        if span <= 0:
+            return np.zeros(original_shape, dtype=np.uint8)
+        tensor = torch.round(255 * (tensor - tensor.min()) / span)
+
+        result = tensor.detach().cpu().numpy().astype(np.uint8)
+        if result.ndim == 3:
+            result = np.transpose(result, (1, 2, 0))
+        elif result.ndim == 4:
+            result = np.transpose(result, (0, 2, 3, 1))
+
+        logger.debug("Applied CLAHE (torch) with clip_limit=%s", clip_limit)
+        return result.reshape(original_shape)
+
+    @staticmethod
+    def _apply_clahe_skimage(
+        image: np.ndarray,
+        clip_limit: float,
+        kernel_size: tuple[int, int],
+    ) -> np.ndarray:
+        """Pure scikit-image CLAHE, applied plane by plane."""
+        from skimage.exposure import equalize_adapthist
+
+        image = np.asarray(image)
+        original_shape = image.shape
+
+        # Collapse to a list of 2D planes, remembering how to put them back.
+        if image.ndim == 2:
+            planes = [image]
+        elif image.ndim == 3:
+            planes = [image[..., c] for c in range(image.shape[2])]
+        elif image.ndim == 4:
+            planes = [
+                image[n, ..., c]
+                for n in range(image.shape[0])
+                for c in range(image.shape[3])
+            ]
+        else:
+            raise ValueError(f"Unsupported image shape for CLAHE: {original_shape}")
+
+        # skimage expresses the clip limit as a fraction in (0, 1] whereas
+        # kornia uses an absolute contrast limit; map one onto the other.
+        skimage_clip = float(np.clip(clip_limit / 255.0, 0.001, 1.0))
+
+        equalized = []
+        for plane in planes:
+            scaled = _rescale_unit_interval(plane)
+            if scaled.max() <= 0:
+                equalized.append(np.zeros(plane.shape, dtype=np.uint8))
+                continue
+            out = equalize_adapthist(
+                scaled, kernel_size=kernel_size, clip_limit=skimage_clip
             )
-            result = tensor.detach().numpy().astype(np.uint8)
-            if result.ndim == 3:
-                result = np.transpose(result, (1, 2, 0))
-            elif result.ndim == 4:
-                result = np.transpose(result, (0, 2, 3, 1))
-            result = result.reshape(image.shape)
+            equalized.append(
+                np.round(255 * _rescale_unit_interval(out)).astype(np.uint8)
+            )
 
-            logger.debug(f"Applied CLAHE with clip_limit={clip_limit}")
-            return result
-
-        except Exception as e:
-            logger.error(f"Failed to apply CLAHE: {e}")
-            raise
+        result = np.stack(equalized, axis=0)
+        logger.debug("Applied CLAHE (skimage) with clip_limit=%s", clip_limit)
+        return result.reshape(original_shape)
 
     @staticmethod
     def resize_image(image: np.ndarray, scale: float) -> np.ndarray:
-        """Resize image by scale factor."""
+        """Resize an image by a scale factor using nearest-neighbour sampling.
+
+        Parameters
+        ----------
+        image:
+            Array of shape (H, W), (H, W, C) or (N, H, W, C).
+        scale:
+            Multiplicative scale applied to the two spatial axes.
+
+        Returns
+        -------
+        np.ndarray
+            Resized array with the same number of dimensions as the input.
+        """
         if scale == 1.0:
             return image
 
-        try:
-            if image.ndim == 4:
-                tensor = torch.tensor(np.transpose(image, (0, 3, 1, 2))).float()
-            elif image.ndim == 3:
-                tensor = (
-                    torch.tensor(np.transpose(image, (2, 0, 1))).unsqueeze(0).float()
+        if scale <= 0:
+            raise ValueError(f"Scale must be positive, got {scale}")
+
+        torch = _try_import_torch()
+        if torch is not None:
+            try:
+                return ImageProcessor._resize_image_torch(torch, image, scale)
+            except ImportError:
+                logger.debug("torchvision unavailable; using scikit-image resize")
+            except Exception:
+                logger.warning(
+                    "Torch resize failed; falling back to scikit-image", exc_info=True
                 )
-            else:
-                tensor = torch.tensor(image).unsqueeze(0).unsqueeze(0).float()
+        return ImageProcessor._resize_image_skimage(image, scale)
 
-            new_size = (int(tensor.shape[2] * scale), int(tensor.shape[3] * scale))
+    @staticmethod
+    def _resize_image_torch(torch, image: np.ndarray, scale: float) -> np.ndarray:
+        """torchvision-backed resize. Raises ImportError without torchvision."""
+        from torchvision.transforms import InterpolationMode
+        from torchvision.transforms.functional import resize as torch_resize
 
-            resized = RESIZE(tensor, new_size, InterpolationMode.NEAREST)
-            resized = resized.detach().numpy()
+        image = np.asarray(image)
+        if image.ndim == 4:
+            tensor = torch.tensor(np.transpose(image, (0, 3, 1, 2))).float()
+        elif image.ndim == 3:
+            tensor = torch.tensor(np.transpose(image, (2, 0, 1))).unsqueeze(0).float()
+        else:
+            tensor = torch.tensor(image).unsqueeze(0).unsqueeze(0).float()
 
-            if image.ndim == 4:  # (B, C, H, W) -> (B, H, W, C)
-                resized = np.transpose(resized, (0, 2, 3, 1))
-            elif image.ndim == 3:  # (1, C, H, W) -> (H, W, C)
-                resized = np.transpose(resized[0], (1, 2, 0))
-            else:  # (1, 1, H, W) -> (H, W)
-                resized = resized[0, 0]
+        new_size = (
+            max(1, int(tensor.shape[2] * scale)),
+            max(1, int(tensor.shape[3] * scale)),
+        )
+        resized = torch_resize(tensor, new_size, InterpolationMode.NEAREST)
+        resized = resized.detach().cpu().numpy()
 
-            logger.debug(f"Resized image by factor {scale}")
-            return resized
+        if image.ndim == 4:  # (N, C, H, W) -> (N, H, W, C)
+            resized = np.transpose(resized, (0, 2, 3, 1))
+        elif image.ndim == 3:  # (1, C, H, W) -> (H, W, C)
+            resized = np.transpose(resized[0], (1, 2, 0))
+        else:  # (1, 1, H, W) -> (H, W)
+            resized = resized[0, 0]
 
-        except Exception as e:
-            logger.error(f"Failed to resize image: {e}")
-            raise
+        logger.debug("Resized image by factor %s (torch)", scale)
+        return resized
+
+    @staticmethod
+    def _resize_image_skimage(image: np.ndarray, scale: float) -> np.ndarray:
+        """Pure scikit-image nearest-neighbour resize of the spatial axes."""
+        image = np.asarray(image)
+        if image.ndim == 4:
+            spatial = (image.shape[1], image.shape[2])
+        elif image.ndim == 3:
+            spatial = (image.shape[0], image.shape[1])
+        elif image.ndim == 2:
+            spatial = image.shape
+        else:
+            raise ValueError(f"Unsupported image shape for resize: {image.shape}")
+
+        new_spatial = (max(1, int(spatial[0] * scale)), max(1, int(spatial[1] * scale)))
+
+        if image.ndim == 4:
+            output_shape = (image.shape[0], *new_spatial, image.shape[3])
+        elif image.ndim == 3:
+            output_shape = (*new_spatial, image.shape[2])
+        else:
+            output_shape = new_spatial
+
+        resized = transform.resize(
+            image.astype(np.float32),
+            output_shape,
+            order=0,
+            preserve_range=True,
+            anti_aliasing=False,
+        )
+
+        logger.debug("Resized image by factor %s (skimage)", scale)
+        return resized.astype(image.dtype) if image.dtype != bool else resized > 0.5
 
     @staticmethod
     def normalize_to_uint8(image: np.ndarray) -> np.ndarray:
-        """Normalize image to uint8 range."""
+        """Normalize an image to the uint8 range.
+
+        Constant-valued images (and constant channels) map to zero rather than
+        producing NaN.
+        """
         if image.dtype == np.uint8:
             return image
 
-        try:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                image = image.astype(np.float32)
-                if image.ndim == 3:
-                    normalized = np.around(
-                        255
-                        * (image - image.min(axis=(0, 1)))
-                        / (image.max(axis=(0, 1)) - image.min(axis=(0, 1))),
-                        0,
-                    ).astype(np.uint8)
-                else:
-                    normalized = np.around(
-                        255 * (image - image.min()) / (image.max() - image.min()), 0
-                    ).astype(np.uint8)
+        image = np.asarray(image).astype(np.float32)
 
-            return normalized
+        if image.ndim == 3:
+            # Normalize each channel independently.
+            lo = image.min(axis=(0, 1))
+            hi = image.max(axis=(0, 1))
+            span = hi - lo
+            safe_span = np.where(span > 0, span, 1.0)
+            normalized = 255 * (image - lo) / safe_span
+            normalized = np.where(span > 0, normalized, 0.0)
+        else:
+            normalized = 255 * _rescale_unit_interval(image)
 
-        except Exception as e:
-            logger.error(f"Failed to normalize image: {e}")
-            raise
+        return np.around(normalized, 0).astype(np.uint8)
 
 
 class ProjectManager:
     """Manages project state and serialization."""
 
     def __init__(self):
-        self.project_path: Optional[Path] = None
+        self.project_path: Path | None = None
         self.is_modified = False
         self.metadata = {"version": "2.0", "created": None, "modified": None}
         logger.info("ProjectManager initialized")
@@ -1668,7 +1966,7 @@ class ProjectManager:
         self,
         path: Path,
         point_manager: PointManager,
-        settings: Dict[str, Any],
+        settings: dict[str, Any],
     ) -> None:
         """Save complete project state."""
         try:
@@ -1684,24 +1982,24 @@ class ProjectManager:
 
             self.project_path = path
             self.is_modified = False
-            logger.info(f"Saved project to {path}")
+            logger.info("Saved project to %s", path)
 
         except Exception as e:
-            logger.error(f"Failed to save project: {e}")
+            logger.error("Failed to save project: %s", e)
             raise
 
-    def load_project(self, path: Path) -> Dict[str, Any]:
+    def load_project(self, path: Path) -> dict[str, Any]:
         """Load project state from file."""
         try:
-            with open(path, "r") as f:
+            with open(path) as f:
                 project_data = json.load(f)
 
             self.project_path = path
             self.is_modified = False
-            logger.info(f"Loaded project from {path}")
+            logger.info("Loaded project from %s", path)
 
             return project_data
 
         except Exception as e:
-            logger.error(f"Failed to load project: {e}")
+            logger.error("Failed to load project: %s", e)
             raise

@@ -1,4 +1,4 @@
-from Matchanything.src.config.default import _CN as cfg
+from tpsreg.Matchanything.src.config.default import _CN as cfg
 
 cfg.ROMA.RESIZE_BY_STRETCH = True
 cfg.DATASET.RESIZE_BY_STRETCH = True

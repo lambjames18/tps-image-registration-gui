@@ -1,0 +1,275 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main, dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pipx install ruff==0.14.0
+
+      - name: Lint
+        run: ruff check --output-format=github src/ tests/ scripts/
+
+      - name: Check formatting
+        run: ruff format --check --diff src/ tests/ scripts/
+
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # Tk is not on the default Linux runner image, and there is no display.
+      # Installing both means the GUI tests actually execute rather than skip.
+      - name: Install Tk and a virtual display (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk xvfb
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" pytest pytest-cov
+
+      # The GUI tests run in their own pytest process. Tk can take the whole
+      # interpreter down with a segfault (it did on macOS), and when that
+      # happens in a combined run every other result and the coverage report
+      # are lost with it. Splitting keeps the failure legible.
+      - name: Run tests
+        if: runner.os != 'Linux'
+        run: python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term
+
+      - name: Run tests (Linux, under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term
+
+      - name: Run GUI tests
+        if: runner.os != 'Linux'
+        run: python -m pytest tests/ -v -m gui
+
+      - name: Run GUI tests (Linux, under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest tests/ -v -m gui
+
+      - name: Run GUI tests
+        if: runner.os != 'Linux'
+        run: python -m pytest tests/ -v -m gui
+
+      - name: Run GUI tests (Linux, under Xvfb)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python -m pytest tests/ -v -m gui
+
+      # One reference run feeds the README badges. Ubuntu 3.12 is the job with
+      # Tk installed, so its numbers are the most representative.
+      - name: Upload coverage and test reports
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports
+          path: |
+            coverage.xml
+            junit.xml
+          if-no-files-found: warn
+
+  badges:
+    name: Publish README badges
+    needs: test
+    # Only the default branch drives the badges, so a work-in-progress branch
+    # never changes what the README advertises. Skipped on pull requests, which
+    # cannot be trusted with write permission anyway.
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # Both scratch directories live outside the checkout. Anything untracked
+      # inside the work tree would be picked up by the pathspecs below and
+      # confuse the "has anything changed" check.
+      - uses: actions/download-artifact@v8
+        with:
+          name: test-reports
+          path: ${{ runner.temp }}/reports
+
+      - name: Generate badge data
+        run: |
+          python scripts/make_badges.py \
+            --coverage "${RUNNER_TEMP}/reports/coverage.xml" \
+            --junit "${RUNNER_TEMP}/reports/junit.xml" \
+            --output-dir "${RUNNER_TEMP}/badges"
+
+      # The badge JSON lives on its own orphan branch so it never appears in
+      # the source history and cannot retrigger CI.
+      - name: Publish to the badges branch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git ls-remote --exit-code --heads origin badges >/dev/null 2>&1; then
+            git fetch origin badges
+            git checkout badges
+          else
+            git checkout --orphan badges
+            git rm -rf --quiet . || true
+          fi
+
+          # The branch holds nothing but the badge payloads.
+          find . -maxdepth 1 -name '*.json' -delete
+          cp "${RUNNER_TEMP}"/badges/*.json .
+          git add -A -- ':(top,glob)*.json'
+
+          # Staged-diff is the reliable check; comparing the work tree misses
+          # deletions and trips over untracked files.
+          if git diff --cached --quiet; then
+            echo "Badge data unchanged; nothing to publish."
+            exit 0
+          fi
+
+          git commit -m "Update badge data for ${GITHUB_SHA:0:7}"
+          git push origin badges
+          echo "Published badge data."
+
+  torch-free:
+    name: Core install has no torch dependency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install the core package only
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Fail if torch was pulled in
+        run: |
+          if python -c "import torch" 2>/dev/null; then
+            echo "::error::torch was installed by the core dependency set; it belongs in an extra"
+            exit 1
+          fi
+          echo "torch is absent, as intended"
+
+      - name: Import every module that must work without torch
+        run: |
+          python - <<'PY'
+          import importlib
+
+          for module in [
+              "tpsreg",
+              "tpsreg.models",
+              "tpsreg.presenter",
+              "tpsreg.ransac",
+              "tpsreg.resources_util",
+              "tpsreg.roma_matcher",
+              "tpsreg.tps",
+              "tpsreg.warping",
+          ]:
+              importlib.import_module(module)
+              print(f"ok: {module}")
+          PY
+
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+
+      - name: Check metadata
+        run: python -m twine check dist/*
+
+      - name: Verify packaged resources are present in the wheel
+        run: |
+          python - <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          wheel = next(Path("dist").glob("*.whl"))
+          names = set(zipfile.ZipFile(wheel).namelist())
+
+          required = [
+              "tpsreg/__init__.py",
+              "tpsreg/GUI.py",
+              "tpsreg/resources/theme/dark.tcl",
+              "tpsreg/resources/theme/light.tcl",
+              "tpsreg/resources/EBSD-Correction.ico",
+          ]
+          missing = [name for name in required if name not in names]
+
+          if missing:
+              print(f"::error::missing from {wheel.name}: {missing}")
+              sys.exit(1)
+
+          themed = [n for n in names if n.startswith("tpsreg/resources/theme/dark/")]
+          if not themed:
+              print("::error::theme images are missing from the wheel")
+              sys.exit(1)
+
+          print(f"{wheel.name} contains all required files ({len(names)} entries)")
+          PY
+
+      - name: Install the built wheel in a clean environment
+        run: |
+          python -m venv /tmp/wheel-check
+          /tmp/wheel-check/bin/pip install --upgrade pip
+          /tmp/wheel-check/bin/pip install dist/*.whl
+          cd /tmp && /tmp/wheel-check/bin/python -c "import tpsreg; print(tpsreg.__version__)"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
