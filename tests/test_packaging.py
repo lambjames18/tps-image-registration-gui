@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -164,6 +165,59 @@ class TestEntryPoint:
 
         monkeypatch.setattr(sys, "platform", platform)
         assert cli._tk_platform_help().strip()
+
+
+class TestBundledLicenses:
+    """Everything shipped must be redistributable under this project's license."""
+
+    def test_no_non_commercial_code_is_bundled(self):
+        """CC BY-NC-SA files would block redistribution under MIT.
+
+        Upstream RoMa ships CroCo and DUSt3R under CC BY-NC-SA 4.0. Neither is
+        reachable from the code path this project uses, so both were removed.
+        Re-vendoring RoMa without dropping them again would silently reintroduce
+        a non-commercial restriction across the whole distribution.
+        """
+        src_root = Path(__file__).resolve().parents[1] / "src"
+
+        offenders = []
+        for path in src_root.rglob("*"):
+            if not path.is_file() or path.suffix in {".png", ".ico", ".whl"}:
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if "CC BY-NC-SA" in text or "non-commercial use only" in text:
+                offenders.append(path.relative_to(src_root))
+
+        assert not offenders, (
+            "Files under src/ carry a non-commercial license and must not be "
+            f"redistributed with this project: {offenders}"
+        )
+
+    @pytest.mark.parametrize("subtree", ["croco", "dust3r"])
+    def test_removed_subtrees_stay_removed(self, subtree):
+        models = (
+            Path(__file__).resolve().parents[1]
+            / "src/tpsreg/Matchanything/third_party/ROMA/roma/models"
+        )
+        assert not (models / subtree).exists(), (
+            f"{subtree}/ is licensed CC BY-NC-SA 4.0 and was deliberately "
+            "removed; see NOTICE.md"
+        )
+
+    def test_nothing_imports_the_removed_subtrees(self):
+        """A dangling import would break automatic detection at runtime."""
+        src_root = Path(__file__).resolve().parents[1] / "src"
+
+        importers = [
+            path.relative_to(src_root)
+            for path in src_root.rglob("*.py")
+            if "croco" in path.read_text(encoding="utf-8", errors="ignore")
+            or "dust3r" in path.read_text(encoding="utf-8", errors="ignore")
+        ]
+        assert not importers, f"still reference removed subtrees: {importers}"
 
 
 class TestLogFileLocation:

@@ -1,23 +1,18 @@
 name: Release
 
-# Publishing runs on a version tag (e.g. v0.2.0). Push the tag only after CI is
-# green on the commit you are tagging.
+# Builds installable artifacts and attaches them to a GitHub Release.
 #
-# BEFORE PUBLISHING TO A PUBLIC INDEX: the vendored MatchAnything tree includes
-# files licensed CC BY-NC-SA 4.0 (non-commercial use only), so the built
-# artifacts are not purely MIT-licensed. See NOTICE.md. Resolve this before
-# tagging a public release.
+# This project is distributed through GitHub, not PyPI. Users install with
+# `pip install <url-to-wheel>` or `pip install git+https://...`. There is no
+# publishing step here; if you later decide to publish to PyPI, add a job
+# using pypa/gh-action-pypi-publish with trusted publishing.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-    inputs:
-      target:
-        description: Where to publish
-        required: true
-        default: testpypi
-        type: choice
-        options: [testpypi, pypi]
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -37,16 +32,6 @@ jobs:
 
       - name: Check metadata
         run: python -m twine check dist/*
-
-      # The artifacts carry non-commercially-licensed vendored code. Surface it
-      # in the run log so it cannot be published unnoticed.
-      - name: Report bundled third-party licenses
-        run: |
-          restricted=$(grep -rl "CC BY-NC-SA" src/tpsreg/Matchanything/ | wc -l)
-          if [ "$restricted" -gt 0 ]; then
-            echo "::warning::These artifacts bundle $restricted files licensed \
-          CC BY-NC-SA 4.0 (non-commercial use only). See NOTICE.md."
-          fi
 
       - name: Confirm the tag matches the packaged version
         if: startsWith(github.ref, 'refs/tags/v')
@@ -69,53 +54,41 @@ jobs:
           print(f"tag and package version agree: {version}")
           PY
 
+      # The wheel is what users download, so prove it installs and runs before
+      # attaching it to a release.
+      - name: Install the wheel in a clean environment and smoke test it
+        run: |
+          python -m venv /tmp/release-check
+          /tmp/release-check/bin/pip install --upgrade pip
+          /tmp/release-check/bin/pip install dist/*.whl
+          cd /tmp
+          /tmp/release-check/bin/python -c "
+          import tpsreg
+          from tpsreg.resources_util import theme_path
+          print('version:', tpsreg.__version__)
+          assert theme_path('dark').exists(), 'packaged theme is missing'
+          print('wheel smoke test OK')
+          "
+
+      - name: Confirm no non-commercially-licensed code is bundled
+        run: |
+          count=$(grep -rl "CC BY-NC-SA" src/ 2>/dev/null | wc -l)
+          if [ "$count" -ne 0 ]; then
+            echo "::error::$count file(s) under src/ are licensed CC BY-NC-SA."
+            echo "These must not be redistributed under this project's MIT license."
+            grep -rl "CC BY-NC-SA" src/
+            exit 1
+          fi
+          echo "No non-commercially-licensed files bundled."
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
 
-  publish-testpypi:
-    name: Publish to TestPyPI
-    needs: build
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
-    runs-on: ubuntu-latest
-    environment:
-      name: testpypi
-      url: https://test.pypi.org/p/tpsreg
-    permissions:
-      # Required for PyPI trusted publishing; no API token is stored.
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-
-  publish-pypi:
-    name: Publish to PyPI
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/tpsreg
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - uses: pypa/gh-action-pypi-publish@release/v1
-
   github-release:
     name: Attach artifacts to the GitHub release
-    needs: publish-pypi
+    needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -126,7 +99,34 @@ jobs:
           name: dist
           path: dist/
 
+      # Tags are "v0.2.0" but wheels are named "tpsreg-0.2.0-...", so the
+      # leading v has to come off before building the download URL.
+      - name: Derive the package version from the tag
+        id: version
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           generate_release_notes: true
+          body: |
+            ## Installation
+
+            Requires Python 3.11 or newer.
+
+            Install directly from this release:
+
+            ```
+            pip install https://github.com/lambjames18/tps-image-registration-gui/releases/download/${{ github.ref_name }}/tpsreg-${{ steps.version.outputs.value }}-py3-none-any.whl
+            ```
+
+            Or download `tpsreg-${{ steps.version.outputs.value }}-py3-none-any.whl`
+            from the assets below and install it locally:
+
+            ```
+            pip install tpsreg-${{ steps.version.outputs.value }}-py3-none-any.whl
+            ```
+
+            Then run `tpsreg` to launch the application.
+
+            On Linux you also need Tk: `sudo apt install python3-tk`.

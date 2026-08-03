@@ -17,8 +17,11 @@ The project is now an installable Python package with a test suite and CI.
 - GitHub Actions CI: lint, a test matrix over Ubuntu/macOS/Windows and Python
   3.11–3.13, a job asserting the core install stays torch-free, and a build job
   that verifies packaged resources are present in the wheel.
-- Release workflow publishing to PyPI via trusted publishing on a version tag,
-  with a TestPyPI dry-run path.
+- Release workflow that builds the wheel and sdist on a version tag, verifies
+  the tag matches the packaged version, installs the wheel into a clean
+  environment and smoke tests it, and attaches the artifacts to a GitHub
+  release with installation instructions. Distribution is via GitHub Releases,
+  not PyPI.
 - Ruff lint and format configuration, plus pre-commit hooks.
 - Optional dependency extras: `accelerated` (kornia/torchvision) and
   `matchanything` (the pretrained detection model).
@@ -79,6 +82,12 @@ The project is now an installable Python package with a test suite and CI.
 
 ### Removed
 
+- The vendored CroCo and DUSt3R subtrees under
+  `third_party/ROMA/roma/models/`, 47 files licensed CC BY-NC-SA 4.0
+  (non-commercial use only). Neither is reachable from the code path this
+  project uses, and their presence would have prevented redistribution under
+  the project's MIT license. The whole repository is now permissively licensed.
+  A release check fails the build if such files reappear.
 - `src/tpsreg/image_texture.py`, which opened matplotlib windows at import time
   and referenced hardcoded local dataset paths. The reusable function moved to
   `scripts/texture_analysis.py`.

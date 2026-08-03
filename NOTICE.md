@@ -3,34 +3,9 @@
 `tpsreg` itself is licensed under the MIT License (see [LICENSE](LICENSE)).
 
 It vendors third-party source code under `src/tpsreg/Matchanything/`, used to
-provide optional automatic control point detection. That code is **not** covered
-by the MIT license above. Its licenses are summarised below.
-
-## ⚠️ Non-commercial code is included
-
-Part of the vendored tree is licensed **CC BY-NC-SA 4.0, which permits
-non-commercial use only**. 47 files under
-`src/tpsreg/Matchanything/third_party/ROMA/roma/models/` carry this restriction,
-specifically the `croco/` and `dust3r/` subtrees:
-
-> Copyright (C) 2022-present Naver Corporation. All rights reserved.
-> Licensed under CC BY-NC-SA 4.0 (non-commercial use only).
-
-Consequences worth understanding before redistributing:
-
-- The repository as a whole **cannot** be treated as MIT-licensed, even though
-  `tpsreg`'s own code is. Anyone redistributing the combined work inherits the
-  non-commercial restriction on those files.
-- Publishing the current wheel to a public index distributes those files, since
-  the whole `Matchanything` tree is packaged.
-- Academic and other non-commercial research use is permitted. Commercial use of
-  the vendored model code is not.
-
-If unrestricted redistribution matters for your use, the options are to remove
-the vendored tree and load MatchAnything from a separately installed upstream
-package, or to package it as an optional plugin distributed separately from the
-MIT-licensed core. `tpsreg`'s own registration code has no such restriction, and
-the core install does not depend on any of it.
+provide optional automatic control point detection. That code keeps its own
+licenses, summarised below. All of it is permissively licensed (Apache-2.0 or
+MIT), so the repository and the built artifacts can be redistributed freely.
 
 ## Component licenses
 
@@ -38,9 +13,25 @@ the core install does not depend on any of it.
 |---|---|---|
 | [MatchAnything](https://github.com/zju3dv/MatchAnything) | `src/tpsreg/Matchanything/` | Apache License 2.0 — see `src/tpsreg/Matchanything/LICENSE` |
 | [RoMa](https://github.com/Parskatt/RoMa) | `src/tpsreg/Matchanything/third_party/ROMA/` | MIT, © 2023 Johan Edstedt — see `src/tpsreg/Matchanything/third_party/ROMA/LICENSE` |
-| [CroCo](https://github.com/naver/croco) | `.../third_party/ROMA/roma/models/croco/` | **CC BY-NC-SA 4.0**, © Naver Corporation — non-commercial use only |
-| [DUSt3R](https://github.com/naver/dust3r) | `.../third_party/ROMA/roma/models/dust3r/` | **CC BY-NC-SA 4.0**, © Naver Corporation — non-commercial use only |
 | [DINOv2](https://github.com/facebookresearch/dinov2) | `.../third_party/ROMA/roma/models/transformer/` | Apache License 2.0, © Meta Platforms, Inc. |
+
+## Removed: non-commercial components
+
+Upstream RoMa also ships [CroCo](https://github.com/naver/croco) and
+[DUSt3R](https://github.com/naver/dust3r) under
+`roma/models/croco/` and `roma/models/dust3r/`. Both are licensed
+**CC BY-NC-SA 4.0 (non-commercial use only)** by Naver Corporation, which would
+have prevented this project from being redistributed under its MIT license.
+
+Neither is reachable from the code path this project uses. The RoMa model
+loaded by `tpsreg.roma_matcher` resolves through `roma.models.matcher`,
+`roma.models.encoders` and `roma.models.transformer`, none of which import
+CroCo or DUSt3R. Those two subtrees were therefore removed rather than shipped.
+
+If you re-vendor RoMa from upstream, drop `roma/models/croco/` and
+`roma/models/dust3r/` again, or the non-commercial restriction returns. The
+release workflow fails the build if any `CC BY-NC-SA` file reappears under
+`src/`.
 
 ## Theme
 

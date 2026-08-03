@@ -86,14 +86,26 @@ did not raise catches very little. Assert on shapes, values and error messages.
 
 Small, focused pull requests get reviewed faster than large ones.
 
+**Do not re-add the CroCo or DUSt3R subtrees.** Upstream RoMa ships
+`roma/models/croco/` and `roma/models/dust3r/` under CC BY-NC-SA 4.0
+(non-commercial use only). Neither is reachable from the code path this project
+uses, so both were removed; keeping them would prevent the project from being
+redistributed under its MIT license. If you re-vendor RoMa from upstream, drop
+them again. The release workflow fails the build if a `CC BY-NC-SA` file
+reappears under `src/`.
+
 ## Releasing
 
-Maintainers only:
+The project is distributed through GitHub Releases, not PyPI. Maintainers only:
 
 1. Update `version` in `pyproject.toml` and add a `CHANGELOG.md` entry.
 2. Merge to the default branch and confirm CI is green.
-3. Optionally dry-run: run the Release workflow manually against `testpypi`.
-4. Tag and push: `git tag v0.3.0 && git push origin v0.3.0`.
+3. Tag and push: `git tag v0.3.0 && git push origin v0.3.0`.
 
-The release workflow verifies the tag matches the packaged version, publishes to
-PyPI via trusted publishing, and attaches the artifacts to the GitHub release.
+The release workflow then verifies the tag matches the packaged version, builds
+the wheel and sdist, installs the wheel into a clean environment and smoke tests
+it, checks no non-commercially-licensed code is bundled, and attaches the
+artifacts to a GitHub release with installation instructions.
+
+You can run the workflow manually (`workflow_dispatch`) to build and check the
+artifacts without tagging.

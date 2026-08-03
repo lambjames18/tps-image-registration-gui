@@ -15,15 +15,35 @@ features, in 2D or across a serial-sectioning stack.
 
 ## Installation
 
-Requires Python 3.11 or newer.
+Requires Python 3.11 or newer. This project is distributed through GitHub
+rather than PyPI, so install it from a release or directly from the repository.
+
+**From the latest release** (recommended — download the `.whl` from the
+[releases page](https://github.com/lambjames18/tps-image-registration-gui/releases)):
+
+```bash
+pip install tpsreg-0.2.0-py3-none-any.whl
+```
+
+**From the repository:**
 
 ```bash
 pip install git+https://github.com/lambjames18/tps-image-registration-gui.git
 ```
 
-Then launch it:
+Either way, launch it with:
 
 ```bash
+tpsreg
+```
+
+Installing into a virtual environment is a good idea if you use Python for
+other work:
+
+```bash
+python -m venv tpsreg-env
+source tpsreg-env/bin/activate     # Windows: tpsreg-env\Scripts\activate
+pip install <wheel-or-git-url>
 tpsreg
 ```
 
@@ -211,5 +231,5 @@ If something does not work, please
 MIT — see [LICENSE](LICENSE).
 
 This project vendors the [MatchAnything](https://github.com/zju3dv/MatchAnything)
-model and its ROMA dependency under `src/tpsreg/Matchanything/`, which are
-licensed separately. See [NOTICE.md](NOTICE.md).
+model and its RoMa dependency under `src/tpsreg/Matchanything/`, which carry
+their own permissive licenses (Apache-2.0 and MIT). See [NOTICE.md](NOTICE.md).
