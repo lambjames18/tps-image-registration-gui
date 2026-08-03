@@ -59,6 +59,19 @@ The Tk theme under `src/tpsreg/resources/theme/` is the
 [Azure theme](https://github.com/rdbende/Azure-ttk-theme) by rdbende, MIT
 licensed.
 
+It carries one local modification. Upstream declares:
+
+```tcl
+package require Tk 8.6
+```
+
+Tcl treats that as major-version bounded, so it refuses to load under Tk 9 with
+`version conflict for package "Tk": have 9.0.3, need 8.6`. Both `dark.tcl` and
+`light.tcl` now declare `package require Tk 8.6-`, the unbounded form, which
+still resolves on 8.6 and also satisfies 9.x. If you update the theme from
+upstream, reapply this change or the application will fall back to a built-in
+ttk theme on Tk 9.
+
 ## Model weights
 
 The MatchAnything checkpoint is **not** distributed with this package. It is

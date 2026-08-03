@@ -2,7 +2,7 @@
 
 # The Azure theme is a beautiful modern ttk theme inspired by Microsoft's fluent design.
 
-package require Tk 8.6
+package require Tk 8.6-
 
 namespace eval ttk::theme::azure-dark {
     variable version 2.0

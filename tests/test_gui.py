@@ -62,11 +62,29 @@ class TestMainWindow:
         assert app.presenter is not None
         assert app.presenter.view is app
 
-    def test_packaged_theme_is_applied(self, app):
+    def test_a_theme_is_active(self, app):
+        """The window always ends up with a usable ttk theme.
+
+        On Tk 8.6 this is the packaged Azure theme. If a future Tk cannot load
+        it, the fallback must still leave a working theme rather than raising
+        out of __init__.
+        """
+        from tkinter import ttk
+
+        active = ttk.Style(app).theme_use()
+        assert active
+        assert active in ttk.Style(app).theme_names()
+        assert active == app.theme_name
+
+    @pytest.mark.skipif(
+        tk.TkVersion >= 9.0,
+        reason="packaged Azure theme targets Tk 8.6; see test_a_theme_is_active",
+    )
+    def test_packaged_azure_theme_loads_on_tk8(self, app):
         """Proves the theme resolved from inside the package, not the repo.
 
-        A failure to source the .tcl leaves ttk on its default theme, so this
-        is the end-to-end check that moving resources into the package worked.
+        A failure to source the .tcl leaves ttk on a built-in theme, so this is
+        the end-to-end check that moving resources into the package worked.
         """
         from tkinter import ttk
 
@@ -75,6 +93,53 @@ class TestMainWindow:
     def test_starts_with_no_data(self, app):
         assert app.presenter.source_image is None
         assert app.presenter.destination_image is None
+
+
+class TestThemeFallback:
+    """The window still opens when the packaged theme cannot be loaded.
+
+    This is the Tk 9 scenario: Tcl refuses a bounded `package require Tk 8.6`
+    against a 9.x interpreter, which used to raise straight out of __init__ and
+    stop the application from opening at all.
+    """
+
+    def test_window_opens_when_the_theme_fails_to_load(self, monkeypatch):
+        from tkinter import ttk
+
+        import tpsreg.GUI as gui_module
+
+        def broken_theme(_style):
+            raise gui_module.tk.TclError(
+                'version conflict for package "Tk": have 9.0.3, need 8.6'
+            )
+
+        monkeypatch.setattr(gui_module, "theme_path", broken_theme)
+
+        try:
+            window = gui_module.ModernDistortionCorrectionView()
+        except tk.TclError as exc:
+            pytest.skip(f"no usable display: {exc}")
+
+        try:
+            window.update_idletasks()
+            active = ttk.Style(window).theme_use()
+
+            # It fell back rather than raising, and the fallback is real.
+            assert active in ttk.Style(window).theme_names()
+            assert not active.startswith("azure")
+            assert window.theme_name == active
+
+            # The window is genuinely usable, not a half-built shell.
+            assert window.title()
+            assert window.presenter is not None
+            window.set_status("still working")
+        finally:
+            with contextlib.suppress(tk.TclError):
+                window.destroy()
+
+    def test_unknown_style_is_rejected(self, app):
+        with pytest.raises(ValueError, match="Unknown style"):
+            app._style_call("solarized")
 
 
 class TestViewCallbacks:
