@@ -88,6 +88,13 @@ The project is now an installable Python package with a test suite and CI.
   project uses, and their presence would have prevented redistribution under
   the project's MIT license. The whole repository is now permissively licensed.
   A release check fails the build if such files reappear.
+- The rest of the unreachable vendored code: training scripts, benchmarks,
+  dataset builders, COLMAP helpers, evaluation tools, demos, notebooks, the
+  alternate ELoFTR config, and upstream requirements files. The vendored tree
+  is now the inference path only — 64 Python modules, down from 175, and
+  2.8 MB down to 820 KB. Determined by walking the import graph from the entry
+  points the project actually loads; the reachable set is byte-for-byte
+  identical before and after.
 - `src/tpsreg/image_texture.py`, which opened matplotlib windows at import time
   and referenced hardcoded local dataset paths. The reusable function moved to
   `scripts/texture_analysis.py`.

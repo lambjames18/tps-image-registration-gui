@@ -74,6 +74,14 @@ than instantiating Tk widgets. Mark anything that genuinely needs a display with
 imports working. It is vendored upstream code and is excluded from linting and
 formatting so it stays diffable against upstream.
 
+The tree has been reduced to the inference path: upstream's training scripts,
+benchmarks, dataset builders, demos and notebooks were removed because nothing
+the project loads reaches them. If you re-vendor from upstream, see the
+"Re-vendoring" section of [NOTICE.md](NOTICE.md) for how the keep-set is
+determined. If you later add point-assisted fine-tuning, expect to bring back
+or write training code deliberately rather than relying on what upstream
+happened to ship.
+
 **Prefer real assertions over smoke tests.** A test that only checks something
 did not raise catches very little. Assert on shapes, values and error messages.
 

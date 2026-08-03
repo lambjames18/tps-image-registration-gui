@@ -7,6 +7,12 @@ provide optional automatic control point detection. That code keeps its own
 licenses, summarised below. All of it is permissively licensed (Apache-2.0 or
 MIT), so the repository and the built artifacts can be redistributed freely.
 
+The vendored tree has been reduced to the inference path only. Upstream ships
+training scripts, benchmarks, dataset builders, COLMAP helpers, demos and
+notebooks; none of it is reachable from the model this project loads, so it was
+removed. What remains is the 64 modules needed to construct the RoMa matcher and
+run it on an image pair, plus the upstream `LICENSE` and `README.md` files.
+
 ## Component licenses
 
 | Component | Path | License |
@@ -32,6 +38,20 @@ If you re-vendor RoMa from upstream, drop `roma/models/croco/` and
 `roma/models/dust3r/` again, or the non-commercial restriction returns. The
 release workflow fails the build if any `CC BY-NC-SA` file reappears under
 `src/`.
+
+## Re-vendoring
+
+If you need to update the vendored model, the import graph is what decides
+what to keep. Walk it from the four entry points this project actually loads —
+`src/lightning/lightning_loftr.py`, `src/config/default.py`,
+`configs/models/roma_model.py` and `Matchanything/__init__.py` — following
+absolute, relative and star imports, and including every ancestor
+`__init__.py` along the way. Anything the walk does not reach is not used at
+inference time.
+
+Note that upstream imports are rewritten from `Matchanything.` to
+`tpsreg.Matchanything.` so the tree resolves as an installed package rather
+than relying on the working directory.
 
 ## Theme
 
