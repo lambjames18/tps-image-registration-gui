@@ -3,8 +3,6 @@ models.py - Data Models and Business Logic for Distortion Correction
 
 This module contains the core business logic separated from the UI.
 """
-import traceback
-
 import json
 import logging
 from dataclasses import dataclass, field
@@ -874,12 +872,9 @@ class PointAutoIdentifier:
             return src_points.astype(int), dst_points.astype(int)
 
         except ImportError as e:
-            # logger.error(
-            #     "Failed to import ROMA matcher. Make sure roma_matcher.py is available: %s",
-            #     e,
-            # )
-            logger.exception(
+            logger.error(
                 "Failed to import ROMA matcher. Make sure roma_matcher.py is available: %s",
+                e,
             )
             return np.array([]), np.array([])
         except FileNotFoundError as e:
