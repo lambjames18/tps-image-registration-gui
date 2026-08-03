@@ -1,5 +1,5 @@
 import torch
-from tpsreg.Matchanything.src.utils.homography_utils import warp_points_torch
+from Matchanything.src.utils.homography_utils import warp_points_torch
 
 
 def get_unique_indices(input_tensor):

@@ -8,14 +8,14 @@ import numpy as np
 import pytorch_lightning as pl
 from matplotlib import pyplot as plt
 
-from tpsreg.Matchanything.src.loftr import LoFTR
-from tpsreg.Matchanything.src.loftr.utils.supervision import (
+from Matchanything.src.loftr import LoFTR
+from Matchanything.src.loftr.utils.supervision import (
     compute_supervision_coarse,
     compute_supervision_fine,
     compute_roma_supervision,
 )
-from tpsreg.Matchanything.src.optimizers import build_optimizer, build_scheduler
-from tpsreg.Matchanything.src.utils.metrics import (
+from Matchanything.src.optimizers import build_optimizer, build_scheduler
+from Matchanything.src.utils.metrics import (
     compute_symmetrical_epipolar_errors,
     compute_pose_errors,
     compute_homo_corner_warp_errors,
@@ -23,11 +23,11 @@ from tpsreg.Matchanything.src.utils.metrics import (
     compute_warp_control_pts_errors,
     aggregate_metrics,
 )
-from tpsreg.Matchanything.src.utils.plotting import make_matching_figures, make_scores_figures
-from tpsreg.Matchanything.src.utils.comm import gather, all_gather
-from tpsreg.Matchanything.src.utils.misc import lower_config, flattenList
-from tpsreg.Matchanything.src.utils.profiler import PassThroughProfiler
-from tpsreg.Matchanything.third_party.ROMA.roma.matchanything_roma_model import (
+from Matchanything.src.utils.plotting import make_matching_figures, make_scores_figures
+from Matchanything.src.utils.comm import gather, all_gather
+from Matchanything.src.utils.misc import lower_config, flattenList
+from Matchanything.src.utils.profiler import PassThroughProfiler
+from Matchanything.third_party.ROMA.roma.matchanything_roma_model import (
     MatchAnything_Model,
 )
 

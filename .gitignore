@@ -1,35 +1,12 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
-dist/
-.venv/
-.venv-*/
-venv/
-
-# Tooling
-.pytest_cache/
-.ruff_cache/
-.coverage
-coverage.xml
-htmlcov/
-.vscode/
-.idea/
 .DS_Store
-
-# Application output
 *.log
-settings.local.json
-
-# Model weights (downloaded separately, hundreds of MB)
+test_data/3D/control_pts.txt
+/test_data/2D/*.json
+/test_data/3D/*.json
+.vscode/
+CoNi67/*
+Andy/*
+MatchAnything_full_folder/*
 *.ckpt
-src/tpsreg/Matchanything/weights/
-
-# Local project files
-demo_data/**/*.json
-!demo_data/2D/2D_project.json
-!demo_data/3D/3D_project.json
-CoNi67/
-Andy/
-MatchAnything_full_folder/
+*.pyc
+settings.local.json

@@ -1,312 +1,265 @@
-"""Thin-plate spline transformation.
-
-The transform is stored as a dense displacement field covering the destination
-grid, which makes it directly usable as the ``inverse_map`` callable expected by
-:func:`skimage.transform.warp`.
-"""
-
-from __future__ import annotations
-
-import logging
-from collections.abc import Callable
-
 import numpy as np
 from scipy.spatial.distance import cdist
+from tqdm import tqdm
 
-logger = logging.getLogger(__name__)
-
-# Minimum number of non-collinear control points needed to solve the TPS system.
-MIN_CONTROL_POINTS = 3
+## TODO: Build out inverse transform functionality so that you can go both ways
 
 
 class ThinPlateSplineTransform:
-    """Thin-plate spline mapping from destination coordinates back to source.
-
-    The transform is evaluated over the whole destination grid at estimation
-    time and cached in :attr:`params` as a ``(2, height, width)`` array of
-    source coordinates. Calling the instance then reduces to an array lookup,
-    which is what makes warping large stacks tractable.
-
-    Parameters
-    ----------
-    affine_only:
-        Fit only the affine part of the spline, discarding the bending energy
-        term. Useful when the expected distortion is a pure affine.
-    chunk_size:
-        Number of destination pixels to evaluate per chunk. Defaults to a value
-        derived from ``available_memory_gb``.
-    dtype:
-        Floating point type used for the (large) intermediate distance matrices.
-    """
-
-    def __init__(
-        self,
-        affine_only: bool = False,
-        chunk_size: int | None = None,
-        dtype: type = np.float32,
-    ):
+    def __init__(self, affine_only=False, chunk_size=None, dtype=np.float32):
         self._estimated = False
-        self.params: np.ndarray | None = None
-        self.size: tuple[int, int] | None = None
+        self.params = None
         self.affine_only = affine_only
         self.chunk_size = chunk_size
         self.dtype = dtype
 
-    def __call__(self, coords: np.ndarray) -> np.ndarray:
-        """Map destination coordinates to source coordinates.
-
-        Parameters
-        ----------
-        coords:
-            ``(N, 2)`` array of ``(x, y)`` destination coordinates.
-
-        Returns
-        -------
-        np.ndarray
-            ``(N, 2)`` array of ``(x, y)`` source coordinates.
-
-        Raises
-        ------
-        ValueError
-            If the transform has not been estimated yet.
-        """
+    def __call__(self, coords):
+        """Transform coordinates from source to destination using thin plate spline."""
         if not self._estimated:
-            raise ValueError(
-                "Transformation not estimated. Call estimate() before applying it."
-            )
-
+            raise ValueError("Transformation not estimated.")
         params = np.moveaxis(self.params, 0, -1)
         coords = np.asarray(coords).astype(int)
+        out = params[(coords[:, 1], coords[:, 0])]
+        return out
 
-        # Clamp to the sampled grid: skimage.transform.warp queries coordinates
-        # over the full output shape, which can exceed the estimated grid when
-        # the caller asks for a larger output than the reference size.
-        height, width = params.shape[:2]
-        rows = np.clip(coords[:, 1], 0, height - 1)
-        cols = np.clip(coords[:, 0], 0, width - 1)
-
-        return params[rows, cols]
-
-    def _estimate_chunk_size(
-        self,
-        n_pixels: int,
-        n_control_points: int,
-        available_memory_gb: float = 2.0,
-    ) -> int:
-        """Estimate a chunk size that keeps peak memory near the given budget.
+    def _estimate_chunk_size(self, n_pixels, n_control_points, available_memory_gb=2.0):
+        """
+        Estimate optimal chunk size based on memory constraints.
 
         Parameters
         ----------
-        n_pixels:
-            Total number of pixels to process.
-        n_control_points:
-            Number of control points.
-        available_memory_gb:
-            Memory budget in GB for the computation.
+        n_pixels : int
+            Total number of pixels to process
+        n_control_points : int
+            Number of control points
+        available_memory_gb : float
+            Available memory in GB for the computation
 
         Returns
         -------
-        int
-            Number of pixels to process per chunk.
+        chunk_size : int
+            Optimal number of pixels to process per chunk
         """
+        # Memory per chunk: chunk_size * n_control_points * bytes_per_float
         bytes_per_element = np.dtype(self.dtype).itemsize
 
-        # Peak usage per pixel is dominated by the distance matrix and the U
-        # matrix, each chunk_size x n_control_points; 4x leaves headroom for
-        # the intermediates SciPy allocates.
-        memory_per_pixel = n_control_points * bytes_per_element * 4
+        # Main memory consumers:
+        # 1. Distance matrix: chunk_size × n_control_points
+        # 2. U matrix: chunk_size × n_control_points
+        # 3. Intermediate arrays: ~2x the above for safety
+        memory_per_pixel = (
+            n_control_points * bytes_per_element * 4
+        )  # 4x for safety margin
 
         available_bytes = available_memory_gb * 1024**3
         chunk_size = int(available_bytes / memory_per_pixel)
 
-        # At least 1000 pixels per chunk, never more than the whole image.
-        return max(1000, min(chunk_size, n_pixels))
+        # Clamp to reasonable bounds
+        chunk_size = max(
+            1000, min(chunk_size, n_pixels)
+        )  # At least 1000, at most all pixels
 
-    @staticmethod
-    def _check_valid_points(src: np.ndarray, dst: np.ndarray) -> bool:
-        """Validate a set of control point correspondences.
+        return chunk_size
 
-        Raises
-        ------
-        ValueError
-            If the arrays disagree in shape, are not 2D coordinates, hold fewer
-            than :data:`MIN_CONTROL_POINTS` points, or contain duplicates.
-        """
-        src = np.asarray(src)
-        dst = np.asarray(dst)
-
+    def _check_valid_points(self, src, dst):
+        """Check if source and destination points are valid."""
         if src.shape != dst.shape:
+            raise ValueError("Source and destination points must have the same shape.")
+        elif src.shape == (2,):
             raise ValueError(
-                f"Source and destination points must have the same shape; "
-                f"got {src.shape} and {dst.shape}."
+                "Incorrect shape for control points; expected (N, 2), received (2,)."
             )
-        if src.ndim != 2:
-            raise ValueError(
-                f"Incorrect shape for control points; expected (N, 2), "
-                f"received {src.shape}."
-            )
-        if src.shape[1] != 2:
+        elif src.shape[1] != 2:
             raise ValueError("Control points must be 2D coordinates.")
-        if src.shape[0] < MIN_CONTROL_POINTS:
-            raise ValueError(
-                f"At least {MIN_CONTROL_POINTS} control points are required; "
-                f"got {src.shape[0]}."
-            )
-
-        if np.unique(src, axis=0).shape[0] != src.shape[0]:
-            raise ValueError("Source control points contain duplicates.")
-        if np.unique(dst, axis=0).shape[0] != dst.shape[0]:
-            raise ValueError("Destination control points contain duplicates.")
-
+        elif src.shape[0] < 3:
+            raise ValueError("At least 3 control points are required.")
+        # Check for duplicate points
+        src_duplicates = np.unique(src, axis=0).shape[0] != src.shape[0]
+        dst_duplicates = np.unique(dst, axis=0).shape[0] != dst.shape[0]
+        if src_duplicates or dst_duplicates:
+            raise ValueError("Control points contain duplicates.")
         return True
 
-    def estimate(
-        self,
-        src: np.ndarray,
-        dst: np.ndarray,
-        size: tuple[int, int],
-        available_memory_gb: float = 2.0,
-        progress_callback: Callable[[int, int], None] | None = None,
-    ) -> bool:
-        """Estimate the spline mapping between source and destination points.
+    def estimate(self, src, dst, size, available_memory_gb=2.0):
+        """Estimate optimal spline mappings between source and destination points.
 
         Parameters
         ----------
-        src:
-            ``(N, 2)`` control points in source coordinates.
-        dst:
-            ``(N, 2)`` control points in destination coordinates.
-        size:
-            ``(height, width)`` of the destination grid.
-        available_memory_gb:
-            Memory budget used to pick a chunk size when ``chunk_size`` is None.
-        progress_callback:
-            Optional ``callback(completed_chunks, total_chunks)`` invoked after
-            each chunk, so a GUI can drive a progress bar.
+        src : (N, 2) array_like
+            Control points at source coordinates.
+        dst : (N, 2) array_like
+            Control points at destination coordinates.
+        size : tuple
+            Size of the reference image (height, width).
 
         Returns
         -------
-        bool
-            True when the estimation succeeded.
+        success: bool
+            True indicates that the estimation was successful.
 
         Notes
         -----
         The number N of source and destination points must match.
         """
+        # validate input points
         self._check_valid_points(src, dst)
 
-        src = np.asarray(src, dtype=float)
-        dst = np.asarray(dst, dtype=float)
+        # convert input pixels in arrays. cps are control points
+        xs = np.asarray(dst[:, 0])
+        ys = np.array(dst[:, 1])
+        cps = np.vstack([xs, ys]).T
+        xt = np.asarray(src[:, 0])
+        yt = np.array(src[:, 1])
+        n = len(xs)
+        # print("Number of control points:", n)
 
-        # Control points live on the destination grid; the spline maps them
-        # back to the source, which is the direction skimage.warp needs.
-        cps = np.vstack([dst[:, 0], dst[:, 1]]).T
-        xt = src[:, 0]
-        yt = src[:, 1]
-        n = cps.shape[0]
-
+        # construct L
         L = self._TPS_makeL(cps)
 
-        # Right-hand side, padded with the three affine constraints.
-        xt_aug = np.concatenate([xt, np.zeros(3)])
-        yt_aug = np.concatenate([yt, np.zeros(3)])
-        Y = np.vstack([xt_aug, yt_aug]).T
+        # construct Y
+        xtAug = np.concatenate([xt, np.zeros(3)])
+        ytAug = np.concatenate([yt, np.zeros(3)])
+        Y = np.vstack([xtAug, ytAug]).T
 
-        try:
-            params = np.linalg.solve(L, Y)
-        except np.linalg.LinAlgError as exc:
-            raise ValueError(
-                "Could not solve the thin-plate spline system. This usually "
-                "means the control points are collinear or nearly coincident."
-            ) from exc
-
+        # calculate unknown params in (W | a).T
+        params = np.linalg.solve(L, Y)
         wi = params[:n, :]
         a1 = params[n, :]
         ax = params[n + 1, :]
         ay = params[n + 2, :]
 
-        # At (x, y) in the destination, the corresponding source point is
-        # a1 + ax*x + ay*y + sum(wi * U(r)).
-        height, width = int(size[0]), int(size[1])
-        n_pixels = width * height
+        # Thin plate spline calculation
+        # at some point (x,y) in reference, the corresponding point in the distorted data is at
+        # [X,Y] = a1 + ax*xRef + ay*yRef + sum(wi*Ui)
+        # dimensions of reference image in pixels
+        lx = size[1]
+        ly = size[0]
 
-        x = np.linspace(1, width, width)
-        y = np.linspace(1, height, height)
+        # for fineness of grid, if you want to fix all points, leave nx=lx, ny=ly
+        nx = lx  # num points along reference x-direction, full correction will have nx = lx
+        ny = ly  # num points along reference y-direction, full correction will have ny = ly
+        n_pixels = nx * ny
+
+        # (x,y) coordinates from reference image
+        x = np.linspace(1, lx, nx)
+        y = np.linspace(1, ly, ny)
         xgd, ygd = np.meshgrid(x, y)
+        pixels = np.vstack([xgd.flatten(), ygd.flatten()]).T
 
-        # Affine component, evaluated over the full grid at once.
-        affine = np.einsum("i,jk->ijk", ax, xgd) + np.einsum("i,jk->ijk", ay, ygd)
+        # affine transformation portion
+        axs = np.einsum("i,jk->ijk", ax, xgd)
+        ays = np.einsum("i,jk->ijk", ay, ygd)
+        affine = axs + ays
         affine[0, :, :] += a1[0]
         affine[1, :, :] += a1[1]
+        del xgd, ygd, x, y
 
         if self.affine_only:
-            self.params = affine.astype(self.dtype)
+            self.params = affine
         else:
-            pixels = np.vstack([xgd.flatten(), ygd.flatten()]).T
-            del xgd, ygd, x, y
+            # Determine chunk size
+            if self.chunk_size is None:
+                chunk_size = self._estimate_chunk_size(n_pixels, n, available_memory_gb)
+            else:
+                chunk_size = self.chunk_size
 
-            chunk_size = self.chunk_size or self._estimate_chunk_size(
-                n_pixels, n, available_memory_gb
-            )
             n_chunks = int(np.ceil(n_pixels / chunk_size))
-            logger.info(
-                "Computing bending transformation over %d pixels in %d chunk(s) "
-                "of ~%d pixels",
-                n_pixels,
-                n_chunks,
-                chunk_size,
+            print(
+                f"Processing {n_pixels:,} pixels in {n_chunks} chunk(s) of ~{chunk_size:,} pixels each"
             )
 
-            bend = np.zeros((2, height, width), dtype=self.dtype)
+            # Compute bending portion in chunks
+            print("Computing bending transformation...")
+            bend = np.zeros((2, ny, nx), dtype=self.dtype)
 
-            for chunk_idx in range(n_chunks):
+            for chunk_idx in tqdm(range(n_chunks)):
                 start_idx = chunk_idx * chunk_size
                 end_idx = min((chunk_idx + 1) * chunk_size, n_pixels)
                 chunk_pixels = pixels[start_idx:end_idx]
 
+                # Vectorized distance calculation for this chunk
                 R = cdist(chunk_pixels, cps, "euclidean").astype(self.dtype)
                 Rsq = R * R
-                Rsq[R == 0] = 1  # U(0) = 0 via log(1); avoids log(0)
+                Rsq[R == 0] = 1  # Avoid log(0)
                 U = Rsq * np.log(Rsq)
 
+                # Matrix multiplication: (chunk_size, n) @ (n, 2) = (chunk_size, 2)
                 bend_chunk = U @ wi
 
+                # Reshape and place into output array
                 chunk_len = end_idx - start_idx
-                flat_indices = start_idx + np.arange(chunk_len)
-                y_indices = flat_indices // width
-                x_indices = flat_indices % width
-                bend[:, y_indices, x_indices] = bend_chunk.T.reshape(2, chunk_len)
+                bend_chunk_reshaped = bend_chunk.T.reshape(2, chunk_len)
 
-                del R, Rsq, U, bend_chunk
+                # Map flat indices back to 2D coordinates
+                y_indices = (start_idx + np.arange(chunk_len)) // nx
+                x_indices = (start_idx + np.arange(chunk_len)) % nx
 
-                if progress_callback is not None:
-                    progress_callback(chunk_idx + 1, n_chunks)
+                bend[:, y_indices, x_indices] = bend_chunk_reshaped
 
-            self.params = (affine + bend).astype(self.dtype)
+                # Clean up chunk memory
+                del R, Rsq, U, bend_chunk, bend_chunk_reshaped
 
-        self.size = (height, width)
+            self.params = affine + bend
+
+        self.size = size
         self._estimated = True
         return True
 
-    @staticmethod
-    def _TPS_makeL(cp: np.ndarray) -> np.ndarray:
-        """Build the ``(K+3, K+3)`` TPS system matrix for K control points."""
+    def _TPS_makeL(self, cp):
+        """Function to make the L matrix for thin plate spline calculation."""
+        # cp: [K x 2] control points
+        # L: [(K+3) x (K+3)]
         K = cp.shape[0]
         L = np.zeros((K + 3, K + 3))
-
-        # P block
+        # make P in L
         L[:K, K] = 1
         L[:K, K + 1 : K + 3] = cp
-        # P.T block
+        # make P.T in L
         L[K, :K] = 1
         L[K + 1 :, :K] = cp.T
-
         R = cdist(cp, cp, "euclidean")
         Rsq = R * R
-        # U(0) is 0; substituting 1 makes log(1) = 0 rather than log(0) = -inf.
-        Rsq[R == 0] = 1
+        Rsq[R == 0] = (
+            1  # avoid log(0) undefined, will correct itself as log(1) = 0, so U(0) = 0
+        )
         U = Rsq * np.log(Rsq)
-        np.fill_diagonal(U, 0)
+        np.fill_diagonal(U, 0)  # should be redundant
         L[:K, :K] = U
-
         return L
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    import time
+
+    tform = ThinPlateSplineTransform()
+
+    Ns = [100, 1000, 5000]
+    results = []
+    for N in Ns:
+        np.random.seed(0)
+        src = np.random.rand(5000, 2) * N
+        dst = src + (np.random.rand(5000, 2) - 0.5) * 10  # small random displacement
+        size = (N, N)
+
+        start_time = time.time()
+        peak = tform.estimate(src, dst, size, available_memory_gb=20.0)
+        end_time = time.time()
+
+        results.append((N, end_time - start_time, peak / 10**6))
+
+    results = np.array(results)
+
+    fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+    ax2 = ax.twinx()
+
+    ax.plot(results[:, 0], results[:, 1], "o-", color="blue", label="Time (s)")
+    ax2.plot(results[:, 0], results[:, 2], "s--", color="red", label="Memory (MB)")
+    ax.set_xscale("log")
+    ax.set_xlabel("Number of Control Points")
+    ax.set_ylabel("Time (s)")
+    ax2.set_ylabel("Memory (MB)")
+    ax.legend(loc="upper left")
+    ax2.legend(loc="upper right")
+    plt.title("Thin Plate Spline Transform Performance")
+    plt.show()
