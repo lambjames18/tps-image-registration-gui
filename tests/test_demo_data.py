@@ -29,39 +29,46 @@ def data_3d(demo_data_dir):
     return path
 
 
+@pytest.fixture(scope="session")
+def loaded_ang(demo_data_dir):
+    """The demo .ang scan, parsed once for the whole session.
+
+    Parsing a 313k-row scan is the single slowest thing the suite does, and it
+    dominated the macOS and Windows CI runs when every test reloaded it. These
+    tests only read the result, so sharing it is safe.
+    """
+    path = demo_data_dir / "2D" / "EBSD.ang"
+    if not path.is_file():
+        pytest.skip("demo_data/2D/EBSD.ang is not present")
+    return ImageLoader.load(path)
+
+
 class TestAngLoading:
     """EDAX .ang EBSD scans."""
 
-    def test_loads_expected_modalities(self, data_2d):
-        data = ImageLoader.load(data_2d / "EBSD.ang")
-
-        assert data.metadata["dataformat"] == DataFormat.ANG.value
+    def test_loads_expected_modalities(self, loaded_ang):
+        assert loaded_ang.metadata["dataformat"] == DataFormat.ANG.value
         # An .ang carries several per-pixel quantities, not just one image.
-        assert len(data.modalities) > 1
-        assert "IQ" in data.modalities
+        assert len(loaded_ang.modalities) > 1
+        assert "IQ" in loaded_ang.modalities
 
-    def test_shapes_are_stack_shaped_and_consistent(self, data_2d):
-        data = ImageLoader.load(data_2d / "EBSD.ang")
-
-        shapes = {name: arr.shape for name, arr in data.data.items()}
-        first = data.data["IQ"]
+    def test_shapes_are_stack_shaped_and_consistent(self, loaded_ang):
+        shapes = {name: arr.shape for name, arr in loaded_ang.data.items()}
+        first = loaded_ang.data["IQ"]
         assert first.ndim == 4, f"expected (slices, h, w, c), got {shapes['IQ']}"
         assert first.shape[0] == 1
 
-        for name, arr in data.data.items():
+        for name, arr in loaded_ang.data.items():
             assert arr.shape[:3] == first.shape[:3], f"{name} disagrees on grid size"
 
-    def test_step_size_is_read_from_the_header(self, data_2d):
-        data = ImageLoader.load(data_2d / "EBSD.ang")
-        assert data.resolution > 0
+    def test_step_size_is_read_from_the_header(self, loaded_ang):
+        assert loaded_ang.resolution > 0
 
-    def test_euler_angles_are_assembled(self, data_2d):
-        data = ImageLoader.load(data_2d / "EBSD.ang")
-        assert "EulerAngles" in data.modalities
+    def test_euler_angles_are_assembled(self, loaded_ang):
+        assert "EulerAngles" in loaded_ang.modalities
 
-    def test_no_nans_survive_loading(self, data_2d):
-        data = ImageLoader.load(data_2d / "EBSD.ang")
-        assert np.all(np.isfinite(data.data["IQ"]))
+    def test_no_nans_survive_loading(self, loaded_ang):
+        assert np.all(np.isfinite(loaded_ang.data["IQ"]))
 
 
 class TestImageLoading:

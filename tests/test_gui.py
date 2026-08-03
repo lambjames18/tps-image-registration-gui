@@ -5,9 +5,17 @@ desktop session. They skip cleanly when neither Tk nor a display is available,
 so the rest of the suite stays headless.
 
 Deselect them with: pytest -m "not gui"
+
+One root window is created for the whole module and reset between tests. Do not
+change this to a function-scoped fixture: repeatedly creating and destroying
+tk.Tk() roots in a single process segfaults Aqua Tk on macOS (it crashed on the
+seventh window under Python 3.11/3.12 in CI). Reusing one root also makes the
+module noticeably faster everywhere.
 """
 
 from __future__ import annotations
+
+import contextlib
 
 import numpy as np
 import pytest
@@ -17,9 +25,9 @@ tk = pytest.importorskip("tkinter", reason="Tk is not installed")
 pytestmark = pytest.mark.gui
 
 
-@pytest.fixture
-def app():
-    """A constructed main window, destroyed after the test."""
+@pytest.fixture(scope="module")
+def _root():
+    """The single Tk window shared by every test in this module."""
     from tpsreg.GUI import ModernDistortionCorrectionView
 
     try:
@@ -31,7 +39,17 @@ def app():
     try:
         yield window
     finally:
-        window.destroy()
+        # Already torn down is fine; nothing useful left to do.
+        with contextlib.suppress(tk.TclError):
+            window.destroy()
+
+
+@pytest.fixture
+def app(_root):
+    """The shared window, reset to a clean project for each test."""
+    _root.presenter.new_project()
+    _root.update_idletasks()
+    return _root
 
 
 class TestMainWindow:

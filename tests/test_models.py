@@ -19,8 +19,55 @@ from tpsreg.models import (
     ProjectManager,
     TransformManager,
     TransformType,
+    _read_numeric_table,
     _rescale_unit_interval,
 )
+
+
+class TestNumericTableReader:
+    """The fast table reader used to parse .ang scans."""
+
+    def test_reads_a_plain_table(self, tmp_path):
+        path = tmp_path / "table.txt"
+        path.write_text("1 2 3\n4 5 6\n")
+        np.testing.assert_array_equal(
+            _read_numeric_table(path), [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+        )
+
+    def test_skips_header_lines(self, tmp_path):
+        path = tmp_path / "table.txt"
+        path.write_text("# header\n# more header\n7 8\n9 10\n")
+        np.testing.assert_array_equal(
+            _read_numeric_table(path, skip_header=2), [[7.0, 8.0], [9.0, 10.0]]
+        )
+
+    def test_single_row_is_still_two_dimensional(self, tmp_path):
+        """load_ang indexes rows, so a one-row scan must not collapse to 1D."""
+        path = tmp_path / "table.txt"
+        path.write_text("1 2 3\n")
+        assert _read_numeric_table(path).shape == (1, 3)
+
+    def test_falls_back_when_values_are_missing(self, tmp_path):
+        """loadtxt raises on ragged rows; genfromtxt fills them with NaN.
+
+        Real scans occasionally carry blank entries, so the fallback is what
+        keeps those files loadable.
+        """
+        path = tmp_path / "ragged.txt"
+        path.write_text("1,2,3\n4,,6\n")
+
+        # Comma-delimited with a hole: loadtxt cannot parse this at all.
+        with pytest.raises(ValueError):
+            np.loadtxt(path, dtype=float, ndmin=2)
+
+        data = _read_numeric_table(path)
+        assert data.shape[0] >= 1
+        assert np.isnan(data).any(), "the fallback should surface holes as NaN"
+
+    def test_nan_literals_are_preserved_for_the_caller_to_zero(self, tmp_path):
+        path = tmp_path / "table.txt"
+        path.write_text("1 nan 3\n")
+        assert np.isnan(_read_numeric_table(path)).any()
 
 
 class TestPoint:
