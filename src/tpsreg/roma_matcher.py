@@ -240,6 +240,7 @@ def create_matcher(
     matcher = matcher.eval().to(resolved_device)
     # Remember the device so apply_matcher does not have to redetect it.
     matcher._tpsreg_device = resolved_device
+    # object.__setattr__(matcher, "_tpsreg_device", resolved_device)
     return matcher
 
 

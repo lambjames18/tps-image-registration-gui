@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from kornia.geometry.subpix import dsnt
-from kornia.utils.grid import create_meshgrid
+from kornia.geometry.grid import create_meshgrid
 
 from loguru import logger
 

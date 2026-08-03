@@ -3,6 +3,7 @@ models.py - Data Models and Business Logic for Distortion Correction
 
 This module contains the core business logic separated from the UI.
 """
+import traceback
 
 import json
 import logging
@@ -751,7 +752,7 @@ class PointAutoIdentifier:
         destination_image: np.ndarray,
         checkpoint_path: str | None = None,
         **kwargs,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Detect matching points between images using ROMA (MatchAnything).
 
         Args:
@@ -873,9 +874,12 @@ class PointAutoIdentifier:
             return src_points.astype(int), dst_points.astype(int)
 
         except ImportError as e:
-            logger.error(
+            # logger.error(
+            #     "Failed to import ROMA matcher. Make sure roma_matcher.py is available: %s",
+            #     e,
+            # )
+            logger.exception(
                 "Failed to import ROMA matcher. Make sure roma_matcher.py is available: %s",
-                e,
             )
             return np.array([]), np.array([])
         except FileNotFoundError as e:
