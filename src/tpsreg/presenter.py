@@ -387,6 +387,13 @@ class ApplicationPresenter:
             )
             if src_points.size == 0 or dst_points.size == 0:
                 logger.warning("No points detected by auto identifier")
+                # Silence here reads as "nothing happened" to the user, who has
+                # no other signal that detection ran at all.
+                self._notify_view_error(
+                    f"Automatic detection with '{method}' found no matching "
+                    "points. Try adjusting the detection settings, enabling "
+                    "CLAHE to boost contrast, or placing points manually."
+                )
                 return False
             logger.info(f"Detected {len(src_points)} points")
 
@@ -502,25 +509,46 @@ class ApplicationPresenter:
             return False
 
     def add_point(self, source: str, x: int, y: int) -> None:
-        """Add a control point."""
+        """Add a control point to the source or destination image.
+
+        Points are placed one side at a time; adding a source point asks the
+        view to collect its partner.
+        """
         try:
+            if source not in ("source", "destination"):
+                raise ValueError(f"Unknown point target: {source!r}")
+
+            image = self.source_image if source == "source" else self.destination_image
+            if image is None:
+                logger.warning("Cannot add a %s point before an image is loaded", source)
+                return
+
+            # Reject clicks outside the image rather than storing coordinates
+            # that will fail much later, during transform estimation.
+            if not self.is_point_in_bounds(source, x, y):
+                logger.warning(
+                    "Ignoring %s point (%d, %d): outside the image bounds",
+                    source,
+                    x,
+                    y,
+                )
+                return
+
             point = Point(x, y, self.current_slice)
 
-            if source == "source" and self.source_image is not None:
-                # Need to add corresponding point in destination
-                # For now, add at same location (user will adjust)
-                self.point_manager.source_points.add_point(point)
+            if source == "source":
+                self.point_manager.add_source_point(point)
                 self._notify_view_request_corresponding_point("destination")
-            elif source == "destination" and self.destination_image is not None:
-                # Correct for matched resolutions
+            else:
+                # Destination coordinates are displayed at the source scale
+                # when resolutions are matched; convert back before storing.
                 if self.match_resolutions:
                     src_res, dst_res = self.get_resolutions()
                     res_scale = src_res / dst_res
                     point = Point(
                         int(x * res_scale), int(y * res_scale), self.current_slice
                     )
-                # Add destination point
-                self.point_manager.destination_points.add_point(point)
+                self.point_manager.add_destination_point(point)
 
             self._save_points()
             self.project_manager.mark_modified()
@@ -1015,7 +1043,7 @@ class ApplicationPresenter:
 
             # Estimate transform
             tform = self.transform_manager.estimate_transform(
-                src_points, dst_points, transform_type, size=output_shape
+                src_points, dst_points, transform_type, output_shape=output_shape
             )
 
             # Export

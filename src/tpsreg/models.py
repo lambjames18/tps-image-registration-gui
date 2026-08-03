@@ -19,6 +19,22 @@ from skimage import io, transform
 logger = logging.getLogger(__name__)
 
 
+def _rescale_unit_interval(array: np.ndarray) -> np.ndarray:
+    """Rescale to [0, 1], mapping a constant-valued array to all zeros.
+
+    Plain min-max scaling divides by zero on constant images (a blank slice, a
+    saturated detector, a mask of a single phase), producing NaN that silently
+    becomes garbage on the cast to uint8.
+    """
+    array = array.astype(np.float32)
+    lo = array.min()
+    hi = array.max()
+    span = hi - lo
+    if span <= 0:
+        return np.zeros_like(array)
+    return (array - lo) / span
+
+
 def _try_import_torch():
     """Return the torch module, or None when the optional extra is absent.
 
@@ -236,7 +252,24 @@ class PointManager:
         self._save_state()
         self.source_points.add_point(src_point)
         self.destination_points.add_point(dst_point)
-        logger.debug(f"Added point pair: src={src_point}, dst={dst_point}")
+        logger.debug("Added point pair: src=%s, dst=%s", src_point, dst_point)
+
+    def add_source_point(self, point: Point) -> None:
+        """Add a single source point, recording it for undo.
+
+        Interactive placement adds one side at a time, so the two halves of a
+        pair cannot go through :meth:`add_point_pair`. Routing them here keeps
+        undo/redo working.
+        """
+        self._save_state()
+        self.source_points.add_point(point)
+        logger.debug("Added source point: %s", point)
+
+    def add_destination_point(self, point: Point) -> None:
+        """Add a single destination point, recording it for undo."""
+        self._save_state()
+        self.destination_points.add_point(point)
+        logger.debug("Added destination point: %s", point)
 
     def remove_point_pair(self, slice_idx: int, point_idx: int) -> bool:
         """Remove a pair of corresponding points.
@@ -419,46 +452,75 @@ class PointManager:
 
         return point_set
 
-    def _save_state(self) -> None:
-        """Save current state for undo functionality."""
-        state = {
+    def _snapshot(self) -> Dict[str, Dict]:
+        """Capture the current points as a plain, copyable dict."""
+        return {
             "source": self.source_points.to_dict(),
             "destination": self.destination_points.to_dict(),
         }
 
-        # Remove any states after current index
-        self._history = self._history[: self._history_index + 1]
+    def _restore(self, state: Dict[str, Dict]) -> None:
+        """Replace the current points with a previously captured snapshot."""
+        self.source_points = PointSet.from_dict(state["source"])
+        self.destination_points = PointSet.from_dict(state["destination"])
 
-        # Add new state
-        self._history.append(("state", state))
+    def _save_state(self) -> None:
+        """Record the pre-mutation state so the change can be undone.
 
-        # Limit history size
+        Called by every mutating operation *before* it mutates, so
+        ``_history[_history_index]`` always holds the state as it was before
+        the most recent change. The post-change state is only appended lazily,
+        by :meth:`undo`, which is what gives redo somewhere to return to.
+        """
+        # Any redo branch is invalidated by a fresh change.
+        del self._history[self._history_index + 1 :]
+
+        self._history.append(self._snapshot())
+
         if len(self._history) > self.max_history:
             self._history.pop(0)
-        else:
-            self._history_index += 1
+
+        self._history_index = len(self._history) - 1
 
     def undo(self) -> bool:
-        """Undo last operation."""
-        if self._history_index > 0:
-            self._history_index -= 1
-            state = self._history[self._history_index][1]
-            self.source_points = PointSet.from_dict(state["source"])
-            self.destination_points = PointSet.from_dict(state["destination"])
-            logger.debug("Undid last operation")
-            return True
-        return False
+        """Revert the most recent change.
+
+        Returns
+        -------
+        bool
+            True if a change was reverted, False if there was nothing to undo.
+        """
+        if self._history_index < 0:
+            logger.debug("Nothing to undo")
+            return False
+
+        # The live state has not been recorded yet; append it so redo can
+        # bring it back.
+        if self._history_index == len(self._history) - 1:
+            self._history.append(self._snapshot())
+
+        self._restore(self._history[self._history_index])
+        self._history_index -= 1
+        logger.debug("Undid last operation")
+        return True
 
     def redo(self) -> bool:
-        """Redo last undone operation."""
-        if self._history_index < len(self._history) - 1:
-            self._history_index += 1
-            state = self._history[self._history_index][1]
-            self.source_points = PointSet.from_dict(state["source"])
-            self.destination_points = PointSet.from_dict(state["destination"])
-            logger.debug("Redid operation")
-            return True
-        return False
+        """Reapply the most recently undone change.
+
+        Returns
+        -------
+        bool
+            True if a change was reapplied, False if there was nothing to redo.
+        """
+        target = self._history_index + 2
+        if target >= len(self._history):
+            logger.debug("Nothing to redo")
+            return False
+
+        self._history_index += 1
+        self._restore(self._history[target])
+        logger.debug("Redid operation")
+        return True
 
 
 class PointAutoIdentifier:
@@ -563,13 +625,9 @@ class PointAutoIdentifier:
         source_gray = gaussian(source_gray, sigma=sigma)
         destination_gray = gaussian(destination_gray, sigma=sigma)
 
-        # Normalize to 0-1 range for SIFT
-        source_gray = (source_gray - source_gray.min()) / (
-            source_gray.max() - source_gray.min()
-        )
-        destination_gray = (destination_gray - destination_gray.min()) / (
-            destination_gray.max() - destination_gray.min()
-        )
+        # Normalize to 0-1 range for SIFT, tolerating featureless input.
+        source_gray = _rescale_unit_interval(source_gray)
+        destination_gray = _rescale_unit_interval(destination_gray)
 
         try:
             # Detect SIFT keypoints and descriptors
@@ -1033,9 +1091,9 @@ class ImageLoader:
         """Load standard image formats with optional modality name."""
         im = io.imread(path, as_gray=True).astype(np.float32)
 
-        # Normalize to 0-255 range
-        im = np.around((im - np.min(im)) / (np.max(im) - np.min(im)) * 255, 0)
-        im = im.astype(np.uint8)
+        # Normalize to 0-255. A constant image (blank slice, saturated
+        # detector) has zero range and would otherwise become NaN.
+        im = np.around(_rescale_unit_interval(im) * 255, 0).astype(np.uint8)
 
         if im.ndim == 2:
             im = im.reshape((im.shape[0], im.shape[1], 1))
@@ -1598,22 +1656,6 @@ class TransformManager:
         except Exception as e:
             logger.error(f"Failed to export transform: {e}")
             raise
-
-
-def _rescale_unit_interval(array: np.ndarray) -> np.ndarray:
-    """Rescale to [0, 1], mapping a constant-valued array to all zeros.
-
-    Plain min-max scaling divides by zero on constant images (a blank slice, a
-    saturated detector, a mask of a single phase), producing NaN that silently
-    becomes garbage on the cast to uint8.
-    """
-    array = array.astype(np.float32)
-    lo = array.min()
-    hi = array.max()
-    span = hi - lo
-    if span <= 0:
-        return np.zeros_like(array)
-    return (array - lo) / span
 
 
 class ImageProcessor:
