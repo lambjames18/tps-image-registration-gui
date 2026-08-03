@@ -10,7 +10,7 @@ from typing import Optional, Tuple, Dict, Any, List, Union
 from enum import Enum
 import numpy as np
 
-from models import (
+from tpsreg.models import (
     Point,
     PointManager,
     PointAutoIdentifier,

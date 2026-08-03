@@ -6,27 +6,31 @@ This module contains the core business logic separated from the UI.
 
 import json
 import logging
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Dict, List, Self, Tuple, Optional, Any, Union
+from typing import Any, Dict, List, Optional, Self, Tuple, Union
 
 import h5py
 import numpy as np
 from scipy import ndimage as ndi
 from skimage import io, transform
 
-import torch
-from torchvision.transforms import InterpolationMode
-from torchvision.transforms.functional import resize as RESIZE
-from kornia.enhance import equalize_clahe
-
-import warnings
-
-warnings.filterwarnings("ignore", category=UserWarning)
-
-# Configure logging
 logger = logging.getLogger(__name__)
+
+
+def _try_import_torch():
+    """Return the torch module, or None when the optional extra is absent.
+
+    Torch is used to accelerate CLAHE and resizing. Every code path that uses it
+    has a scikit-image fallback, so the application remains fully functional on
+    a torch-free install.
+    """
+    try:
+        import torch
+    except ImportError:
+        return None
+    return torch
 
 
 class DataFormat(Enum):
@@ -54,11 +58,23 @@ class Point:
     y: float
     slice_idx: int = 0
 
-    def to_array(self) -> np.ndarray:
-        """Convert to numpy array [x, y] or [slice, x, y]."""
-        if self.slice_idx == 0:
-            return np.array([self.x, self.y])
-        return np.array([self.slice_idx, self.x, self.y])
+    def to_array(self, include_slice: bool = False) -> np.ndarray:
+        """Convert to a numpy array.
+
+        Parameters
+        ----------
+        include_slice:
+            When True return ``[slice, x, y]``, otherwise ``[x, y]``.
+
+        Notes
+        -----
+        The shape is determined solely by ``include_slice``. Deciding it from
+        ``slice_idx`` instead would silently return a 2-element array for
+        points on slice 0 of a 3D stack.
+        """
+        if include_slice:
+            return np.array([self.slice_idx, self.x, self.y])
+        return np.array([self.x, self.y])
 
 
 @dataclass
@@ -74,19 +90,23 @@ class PointSet:
         self.points[point.slice_idx].append(point)
 
     def remove_point(self, slice_idx: int, point_idx: int) -> bool:
-        """Remove a point by index."""
-        try:
-            if slice_idx in self.points and 0 <= point_idx < len(
-                self.points[slice_idx]
-            ):
-                self.points[slice_idx].pop(point_idx)
-                logger.debug("Point index in range for removal")
-            else:
-                logger.debug("Point index out of range for removal")
+        """Remove a point by index.
+
+        Returns
+        -------
+        bool
+            True if a point was actually removed, False if the slice or index
+            does not exist.
+        """
+        if slice_idx in self.points and 0 <= point_idx < len(self.points[slice_idx]):
+            self.points[slice_idx].pop(point_idx)
+            logger.debug("Removed point %d from slice %d", point_idx, slice_idx)
             return True
-        except Exception as e:
-            logger.error("Failed to remove point from PointSet.")
-            return False
+
+        logger.debug(
+            "No point at index %d on slice %d; nothing removed", point_idx, slice_idx
+        )
+        return False
 
     def get_points_array(self, slice_idx: Optional[int] = None) -> np.ndarray:
         """Get points as numpy array for a specific slice or all slices."""
@@ -219,23 +239,28 @@ class PointManager:
         logger.debug(f"Added point pair: src={src_point}, dst={dst_point}")
 
     def remove_point_pair(self, slice_idx: int, point_idx: int) -> bool:
-        """Remove a pair of corresponding points."""
-        self._save_state()
-        src_removed = self.source_points.remove_point(slice_idx, point_idx)
-        dst_removed = self.destination_points.remove_point(slice_idx, point_idx)
-        logger.debug(
-            f"Attempted to remove point pair at slice {slice_idx}, index {point_idx} with success {src_removed} and {dst_removed}"
-        )
-        success = src_removed and dst_removed
+        """Remove a pair of corresponding points.
 
-        if success:
-            logger.debug(f"Removed point pair at slice {slice_idx}, index {point_idx}")
-        else:
+        Source and destination points are kept in lockstep, so a pair is only
+        removed when the index is valid in both sets. Nothing is pushed onto
+        the undo stack when there is no such pair.
+        """
+        src_points = self.source_points.points.get(slice_idx, [])
+        dst_points = self.destination_points.points.get(slice_idx, [])
+
+        if not (0 <= point_idx < len(src_points) and 0 <= point_idx < len(dst_points)):
             logger.warning(
-                f"Failed to remove point pair at slice {slice_idx}, index {point_idx}"
+                "No point pair at slice %d index %d; nothing removed",
+                slice_idx,
+                point_idx,
             )
+            return False
 
-        return success
+        self._save_state()
+        self.source_points.remove_point(slice_idx, point_idx)
+        self.destination_points.remove_point(slice_idx, point_idx)
+        logger.debug("Removed point pair at slice %d, index %d", slice_idx, point_idx)
+        return True
 
     def get_point_pairs(
         self, slice_idx: Optional[int] = None
@@ -468,15 +493,24 @@ class PointAutoIdentifier:
         Returns:
             Tuple of numpy arrays: (source_points, destination_points)
         """
-        loader_method = getattr(cls, cls.ENGINES[method], None)
-        if loader_method is None:
-            raise ValueError(f"Unsupported point identification method: {method}")
-        logger.info(f"Identifying points using method '{method}'")
+        if method not in cls.ENGINES:
+            raise ValueError(
+                f"Unsupported point identification method: {method!r}. "
+                f"Available methods: {sorted(cls.ENGINES)}"
+            )
+
+        loader_method = getattr(cls, cls.ENGINES[method])
+        logger.info("Identifying points using method '%s'", method)
+
         if method == "matchanything":
+            # Pop rather than get: passing checkpoint_path explicitly *and*
+            # forwarding it inside **kwargs raises "got multiple values".
+            kwargs = dict(kwargs)
+            checkpoint_path = kwargs.pop("checkpoint_path", None) or cls.checkpoint_path
             return loader_method(
                 source_image,
                 destination_image,
-                checkpoint_path=kwargs.get("checkpoint_path", cls.checkpoint_path),
+                checkpoint_path=checkpoint_path,
                 **kwargs,
             )
         return loader_method(source_image, destination_image, **kwargs)
@@ -500,7 +534,7 @@ class PointAutoIdentifier:
         from skimage.feature import SIFT, match_descriptors
         from skimage.transform import AffineTransform
         from skimage.filters import gaussian
-        from ransac import ransac_filter as ransac
+        from tpsreg.ransac import ransac_filter as ransac
 
         # Get parameters
         max_ratio = kwargs.get("max_ratio", 0.75)
@@ -649,7 +683,7 @@ class PointAutoIdentifier:
             Tuple of (source_points, destination_points) as numpy arrays (Nx2)
         """
         try:
-            from roma_matcher import create_matcher, apply_matcher
+            from tpsreg.roma_matcher import apply_matcher, create_matcher
 
             # If matcher is not cached, create it
             if PointAutoIdentifier._matchanything_matcher is None:
@@ -1365,7 +1399,7 @@ class TransformManager:
 
         try:
             # Import TPS here to avoid circular dependency
-            from tps import ThinPlateSplineTransform
+            from tpsreg.tps import ThinPlateSplineTransform
 
             affine_only = transform_type == TransformType.TPS_AFFINE
             tform = ThinPlateSplineTransform(affine_only=affine_only)
@@ -1389,15 +1423,37 @@ class TransformManager:
         dst_points: np.ndarray,
         transform_type: TransformType,
         output_shape: Tuple[int, int],
-        n_slices: int = None,
+        n_slices: Optional[int] = None,
     ) -> Dict[int, Any]:
-        """Estimate transformations for a stack of images based on point correspondences."""
+        """Estimate transformations for every slice of a stack.
+
+        Slices without control points get parameters linearly interpolated from
+        the nearest bracketing slices that do; slices outside that range reuse
+        the closest available transform.
+
+        Parameters
+        ----------
+        src_points, dst_points:
+            Arrays of shape (N, 3) holding ``[slice, x, y]``.
+        transform_type:
+            Which transform to fit.
+        output_shape:
+            ``(height, width)`` of the destination grid.
+        n_slices:
+            Total number of slices in the stack. Defaults to one past the
+            highest slice index that carries points.
+        """
         self._check_valid_points(src_points, dst_points)
 
-        from tps import ThinPlateSplineTransform
+        from tpsreg.tps import ThinPlateSplineTransform
 
         # Get unique slices with points
         slice_indices = np.unique(src_points[:, 0]).astype(int)
+
+        if n_slices is None:
+            # Without an explicit stack depth, cover every slice that has points.
+            n_slices = int(slice_indices.max()) + 1
+            logger.debug("n_slices not supplied; inferred %d from points", n_slices)
 
         # Estimate transforms for each slice with points
         transforms = {}
@@ -1480,7 +1536,7 @@ class TransformManager:
         return_transforms: bool = False,
     ) -> np.ndarray:
         """Apply transformation to a stack of images with interpolation between slices."""
-        from tps import ThinPlateSplineTransform
+        from tpsreg.tps import ThinPlateSplineTransform
 
         if output_shape is None:
             output_shape = image_stack.shape[1:3]
@@ -1544,8 +1600,29 @@ class TransformManager:
             raise
 
 
+def _rescale_unit_interval(array: np.ndarray) -> np.ndarray:
+    """Rescale to [0, 1], mapping a constant-valued array to all zeros.
+
+    Plain min-max scaling divides by zero on constant images (a blank slice, a
+    saturated detector, a mask of a single phase), producing NaN that silently
+    becomes garbage on the cast to uint8.
+    """
+    array = array.astype(np.float32)
+    lo = array.min()
+    hi = array.max()
+    span = hi - lo
+    if span <= 0:
+        return np.zeros_like(array)
+    return (array - lo) / span
+
+
 class ImageProcessor:
-    """Handles image processing operations."""
+    """Handles image processing operations.
+
+    Torch/kornia are used when installed because they are markedly faster on
+    large image stacks. Each operation falls back to an equivalent scikit-image
+    implementation so a core install stays fully functional.
+    """
 
     @staticmethod
     def apply_clahe(
@@ -1553,96 +1630,243 @@ class ImageProcessor:
         clip_limit: float = 20.0,
         kernel_size: Tuple[int, int] = (8, 8),
     ) -> np.ndarray:
-        """Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)."""
-        try:
-            tensor = torch.tensor(image).float()
-            if tensor.ndim == 2:
-                tensor = tensor.unsqueeze(0).unsqueeze(0)
-            elif tensor.ndim == 3:
-                tensor = tensor.permute(2, 0, 1).unsqueeze(0)
-            elif tensor.ndim == 4:
-                tensor = tensor.permute(0, 3, 1, 2).contiguous()
+        """Apply CLAHE (Contrast Limited Adaptive Histogram Equalization).
 
-            tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min())
-            tensor = equalize_clahe(tensor, clip_limit, kernel_size)
-            tensor = torch.round(
-                255 * (tensor - tensor.min()) / (tensor.max() - tensor.min())
+        Parameters
+        ----------
+        image:
+            Array of shape (H, W), (H, W, C) or (N, H, W, C).
+        clip_limit:
+            Contrast limit passed to the underlying CLAHE implementation.
+        kernel_size:
+            Number of tiles along each axis.
+
+        Returns
+        -------
+        np.ndarray
+            uint8 array with the same shape as the input.
+        """
+        torch = _try_import_torch()
+        if torch is not None:
+            try:
+                return ImageProcessor._apply_clahe_torch(
+                    torch, image, clip_limit, kernel_size
+                )
+            except ImportError:
+                logger.debug("kornia unavailable; using scikit-image CLAHE")
+            except Exception:
+                logger.warning(
+                    "Torch CLAHE failed; falling back to scikit-image", exc_info=True
+                )
+        return ImageProcessor._apply_clahe_skimage(image, clip_limit, kernel_size)
+
+    @staticmethod
+    def _apply_clahe_torch(
+        torch,
+        image: np.ndarray,
+        clip_limit: float,
+        kernel_size: Tuple[int, int],
+    ) -> np.ndarray:
+        """Kornia-backed CLAHE. Raises ImportError when kornia is missing."""
+        from kornia.enhance import equalize_clahe
+
+        original_shape = image.shape
+        tensor = torch.tensor(np.asarray(image)).float()
+        if tensor.ndim == 2:
+            tensor = tensor.unsqueeze(0).unsqueeze(0)
+        elif tensor.ndim == 3:
+            tensor = tensor.permute(2, 0, 1).unsqueeze(0)
+        elif tensor.ndim == 4:
+            tensor = tensor.permute(0, 3, 1, 2).contiguous()
+
+        span = tensor.max() - tensor.min()
+        if span <= 0:
+            return np.zeros(original_shape, dtype=np.uint8)
+
+        tensor = (tensor - tensor.min()) / span
+        tensor = equalize_clahe(tensor, clip_limit, kernel_size)
+
+        span = tensor.max() - tensor.min()
+        if span <= 0:
+            return np.zeros(original_shape, dtype=np.uint8)
+        tensor = torch.round(255 * (tensor - tensor.min()) / span)
+
+        result = tensor.detach().cpu().numpy().astype(np.uint8)
+        if result.ndim == 3:
+            result = np.transpose(result, (1, 2, 0))
+        elif result.ndim == 4:
+            result = np.transpose(result, (0, 2, 3, 1))
+
+        logger.debug("Applied CLAHE (torch) with clip_limit=%s", clip_limit)
+        return result.reshape(original_shape)
+
+    @staticmethod
+    def _apply_clahe_skimage(
+        image: np.ndarray,
+        clip_limit: float,
+        kernel_size: Tuple[int, int],
+    ) -> np.ndarray:
+        """Pure scikit-image CLAHE, applied plane by plane."""
+        from skimage.exposure import equalize_adapthist
+
+        image = np.asarray(image)
+        original_shape = image.shape
+
+        # Collapse to a list of 2D planes, remembering how to put them back.
+        if image.ndim == 2:
+            planes = [image]
+        elif image.ndim == 3:
+            planes = [image[..., c] for c in range(image.shape[2])]
+        elif image.ndim == 4:
+            planes = [
+                image[n, ..., c]
+                for n in range(image.shape[0])
+                for c in range(image.shape[3])
+            ]
+        else:
+            raise ValueError(f"Unsupported image shape for CLAHE: {original_shape}")
+
+        # skimage expresses the clip limit as a fraction in (0, 1] whereas
+        # kornia uses an absolute contrast limit; map one onto the other.
+        skimage_clip = float(np.clip(clip_limit / 255.0, 0.001, 1.0))
+
+        equalized = []
+        for plane in planes:
+            scaled = _rescale_unit_interval(plane)
+            if scaled.max() <= 0:
+                equalized.append(np.zeros(plane.shape, dtype=np.uint8))
+                continue
+            out = equalize_adapthist(
+                scaled, kernel_size=kernel_size, clip_limit=skimage_clip
             )
-            result = tensor.detach().numpy().astype(np.uint8)
-            if result.ndim == 3:
-                result = np.transpose(result, (1, 2, 0))
-            elif result.ndim == 4:
-                result = np.transpose(result, (0, 2, 3, 1))
-            result = result.reshape(image.shape)
+            equalized.append(np.round(255 * _rescale_unit_interval(out)).astype(np.uint8))
 
-            logger.debug(f"Applied CLAHE with clip_limit={clip_limit}")
-            return result
-
-        except Exception as e:
-            logger.error(f"Failed to apply CLAHE: {e}")
-            raise
+        result = np.stack(equalized, axis=0)
+        logger.debug("Applied CLAHE (skimage) with clip_limit=%s", clip_limit)
+        return result.reshape(original_shape)
 
     @staticmethod
     def resize_image(image: np.ndarray, scale: float) -> np.ndarray:
-        """Resize image by scale factor."""
+        """Resize an image by a scale factor using nearest-neighbour sampling.
+
+        Parameters
+        ----------
+        image:
+            Array of shape (H, W), (H, W, C) or (N, H, W, C).
+        scale:
+            Multiplicative scale applied to the two spatial axes.
+
+        Returns
+        -------
+        np.ndarray
+            Resized array with the same number of dimensions as the input.
+        """
         if scale == 1.0:
             return image
 
-        try:
-            if image.ndim == 4:
-                tensor = torch.tensor(np.transpose(image, (0, 3, 1, 2))).float()
-            elif image.ndim == 3:
-                tensor = (
-                    torch.tensor(np.transpose(image, (2, 0, 1))).unsqueeze(0).float()
+        if scale <= 0:
+            raise ValueError(f"Scale must be positive, got {scale}")
+
+        torch = _try_import_torch()
+        if torch is not None:
+            try:
+                return ImageProcessor._resize_image_torch(torch, image, scale)
+            except ImportError:
+                logger.debug("torchvision unavailable; using scikit-image resize")
+            except Exception:
+                logger.warning(
+                    "Torch resize failed; falling back to scikit-image", exc_info=True
                 )
-            else:
-                tensor = torch.tensor(image).unsqueeze(0).unsqueeze(0).float()
+        return ImageProcessor._resize_image_skimage(image, scale)
 
-            new_size = (int(tensor.shape[2] * scale), int(tensor.shape[3] * scale))
+    @staticmethod
+    def _resize_image_torch(torch, image: np.ndarray, scale: float) -> np.ndarray:
+        """torchvision-backed resize. Raises ImportError without torchvision."""
+        from torchvision.transforms import InterpolationMode
+        from torchvision.transforms.functional import resize as torch_resize
 
-            resized = RESIZE(tensor, new_size, InterpolationMode.NEAREST)
-            resized = resized.detach().numpy()
+        image = np.asarray(image)
+        if image.ndim == 4:
+            tensor = torch.tensor(np.transpose(image, (0, 3, 1, 2))).float()
+        elif image.ndim == 3:
+            tensor = torch.tensor(np.transpose(image, (2, 0, 1))).unsqueeze(0).float()
+        else:
+            tensor = torch.tensor(image).unsqueeze(0).unsqueeze(0).float()
 
-            if image.ndim == 4:  # (B, C, H, W) -> (B, H, W, C)
-                resized = np.transpose(resized, (0, 2, 3, 1))
-            elif image.ndim == 3:  # (1, C, H, W) -> (H, W, C)
-                resized = np.transpose(resized[0], (1, 2, 0))
-            else:  # (1, 1, H, W) -> (H, W)
-                resized = resized[0, 0]
+        new_size = (
+            max(1, int(tensor.shape[2] * scale)),
+            max(1, int(tensor.shape[3] * scale)),
+        )
+        resized = torch_resize(tensor, new_size, InterpolationMode.NEAREST)
+        resized = resized.detach().cpu().numpy()
 
-            logger.debug(f"Resized image by factor {scale}")
-            return resized
+        if image.ndim == 4:  # (N, C, H, W) -> (N, H, W, C)
+            resized = np.transpose(resized, (0, 2, 3, 1))
+        elif image.ndim == 3:  # (1, C, H, W) -> (H, W, C)
+            resized = np.transpose(resized[0], (1, 2, 0))
+        else:  # (1, 1, H, W) -> (H, W)
+            resized = resized[0, 0]
 
-        except Exception as e:
-            logger.error(f"Failed to resize image: {e}")
-            raise
+        logger.debug("Resized image by factor %s (torch)", scale)
+        return resized
+
+    @staticmethod
+    def _resize_image_skimage(image: np.ndarray, scale: float) -> np.ndarray:
+        """Pure scikit-image nearest-neighbour resize of the spatial axes."""
+        image = np.asarray(image)
+        if image.ndim == 4:
+            spatial = (image.shape[1], image.shape[2])
+        elif image.ndim == 3:
+            spatial = (image.shape[0], image.shape[1])
+        elif image.ndim == 2:
+            spatial = image.shape
+        else:
+            raise ValueError(f"Unsupported image shape for resize: {image.shape}")
+
+        new_spatial = (max(1, int(spatial[0] * scale)), max(1, int(spatial[1] * scale)))
+
+        if image.ndim == 4:
+            output_shape = (image.shape[0], *new_spatial, image.shape[3])
+        elif image.ndim == 3:
+            output_shape = (*new_spatial, image.shape[2])
+        else:
+            output_shape = new_spatial
+
+        resized = transform.resize(
+            image.astype(np.float32),
+            output_shape,
+            order=0,
+            preserve_range=True,
+            anti_aliasing=False,
+        )
+
+        logger.debug("Resized image by factor %s (skimage)", scale)
+        return resized.astype(image.dtype) if image.dtype != bool else resized > 0.5
 
     @staticmethod
     def normalize_to_uint8(image: np.ndarray) -> np.ndarray:
-        """Normalize image to uint8 range."""
+        """Normalize an image to the uint8 range.
+
+        Constant-valued images (and constant channels) map to zero rather than
+        producing NaN.
+        """
         if image.dtype == np.uint8:
             return image
 
-        try:
-            with np.errstate(divide="ignore", invalid="ignore"):
-                image = image.astype(np.float32)
-                if image.ndim == 3:
-                    normalized = np.around(
-                        255
-                        * (image - image.min(axis=(0, 1)))
-                        / (image.max(axis=(0, 1)) - image.min(axis=(0, 1))),
-                        0,
-                    ).astype(np.uint8)
-                else:
-                    normalized = np.around(
-                        255 * (image - image.min()) / (image.max() - image.min()), 0
-                    ).astype(np.uint8)
+        image = np.asarray(image).astype(np.float32)
 
-            return normalized
+        if image.ndim == 3:
+            # Normalize each channel independently.
+            lo = image.min(axis=(0, 1))
+            hi = image.max(axis=(0, 1))
+            span = hi - lo
+            safe_span = np.where(span > 0, span, 1.0)
+            normalized = 255 * (image - lo) / safe_span
+            normalized = np.where(span > 0, normalized, 0.0)
+        else:
+            normalized = 255 * _rescale_unit_interval(image)
 
-        except Exception as e:
-            logger.error(f"Failed to normalize image: {e}")
-            raise
+        return np.around(normalized, 0).astype(np.uint8)
 
 
 class ProjectManager:

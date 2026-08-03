@@ -1,22 +1,27 @@
-"""
-view_interface.py - View Interface for Distortion Correction Application
+"""Tkinter view for the multimodal image registration application.
 
-This module defines the interface that any view implementation must follow.
+Defines the abstract :class:`ViewInterface` the presenter talks to, plus the
+concrete Tk implementation and its auxiliary viewer windows.
 """
 
-import os
-from pathlib import Path
+import argparse
 import logging
-from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import Optional, Tuple, List, Dict
-import numpy as np
+import os
+import sys
 import tkinter as tk
-from PIL import Image, ImageTk
-from tkinter import filedialog, ttk, messagebox
-from presenter import ApplicationPresenter, TransformType, CropMode, DataFormat
+from abc import ABC, abstractmethod
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+from tkinter import filedialog, messagebox, ttk
+from typing import Dict, List, Optional, Tuple
 
-# Configure logging
+import numpy as np
+from PIL import Image, ImageTk
+
+from tpsreg import __version__
+from tpsreg.presenter import ApplicationPresenter, CropMode, DataFormat, TransformType
+from tpsreg.resources_util import apply_window_icon, theme_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,8 +81,6 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
     def __init__(self):
         super().__init__()
 
-        self.resources_path = Path(__file__).parent.parent.parent / "resources"
-
         # Create presenter
         self.presenter = ApplicationPresenter()
         self.presenter.set_view(self)
@@ -96,7 +99,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self._create_controls()
         self._bind_events()
 
-        self.iconbitmap(self.resources_path / "EBSD-Correction.ico")
+        apply_window_icon(self)
 
         logger.info("View initialized")
 
@@ -106,7 +109,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             self.fg = "#ffffff"
             self.hl = "#229fff"
             self.hl2 = "#00bb00"
-            self.tk.call("source", self.resources_path / "theme/dark.tcl")
+            self.tk.call("source", str(theme_path("dark")))
             s = ttk.Style(self)
             s.theme_use("azure-dark")
         elif style == "light":
@@ -114,7 +117,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             self.fg = "#000000"
             self.hl = "#007fff"
             self.hl2 = "#00bb00"
-            self.tk.call("source", self.resources_path / "theme/light.tcl")
+            self.tk.call("source", str(theme_path("light")))
             s = ttk.Style(self)
             s.theme_use("azure-light")
 
@@ -2693,24 +2696,82 @@ class Interactive2DViewer:
 # ========== Main Entry Point ==========
 
 
-def setup_logging():
-    """Setup application logging."""
+def log_file_path() -> Path:
+    """Return the path of the application log file.
+
+    Logs go to a per-user data directory rather than the current working
+    directory, which may well be read-only (or shared) when tpsreg is launched
+    from an installed console script.
+    """
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Logs"
+    else:
+        base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+
+    return base / "tpsreg" / "tpsreg.log"
+
+
+def setup_logging(level: int = logging.INFO) -> None:
+    """Configure application logging to the console and a rotating log file."""
+    handlers: List[logging.Handler] = [logging.StreamHandler()]
+
+    log_path = log_file_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(
+            RotatingFileHandler(log_path, maxBytes=2_000_000, backupCount=3)
+        )
+    except OSError as exc:
+        # Console logging alone is better than refusing to start.
+        print(f"Warning: could not open log file {log_path}: {exc}", file=sys.stderr)
+
     logging.basicConfig(
-        # level=logging.DEBUG,
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.FileHandler("distortion_correction.log"),
-            logging.StreamHandler(),
-        ],
+        handlers=handlers,
     )
 
 
-def main():
-    """Main application entry point."""
-    setup_logging()
+def main() -> None:
+    """Console entry point for the ``tpsreg`` command."""
+    parser = argparse.ArgumentParser(
+        prog="tpsreg",
+        description=(
+            "Multimodal image registration GUI. Aligns images using a "
+            "thin-plate spline fitted to user-selected control points."
+        ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="enable debug-level logging",
+    )
+    args = parser.parse_args()
 
-    app = ModernDistortionCorrectionView()
+    setup_logging(logging.DEBUG if args.debug else logging.INFO)
+    logger.info("Starting tpsreg %s", __version__)
+
+    try:
+        app = ModernDistortionCorrectionView()
+    except tk.TclError as exc:
+        # The most common cause by far is a headless machine or a missing
+        # Tk installation; a traceback here is pure noise for a scientist.
+        print(
+            f"Could not start the graphical interface: {exc}\n\n"
+            "tpsreg needs a graphical display and a working Tk installation.\n"
+            "On Linux, install Tk with your package manager, for example:\n"
+            "    sudo apt install python3-tk",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+
     app.mainloop()
 
 
