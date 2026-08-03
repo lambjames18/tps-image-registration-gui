@@ -64,7 +64,7 @@ matchanything = [
 ]
 
 [project.scripts]
-tpsreg = "tpsreg.GUI:main"
+tpsreg = "tpsreg.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/lambjames18/tps-image-registration-gui"

@@ -126,7 +126,44 @@ class TestEntryPoint:
 
         scripts = entry_points(group="console_scripts")
         names = {ep.name: ep.value for ep in scripts}
-        assert names.get("tpsreg") == "tpsreg.GUI:main"
+        assert names.get("tpsreg") == "tpsreg.cli:main"
+
+    def test_launcher_imports_without_tk(self):
+        """The launcher must be importable so it can report a missing Tk."""
+        from tpsreg import cli
+
+        assert callable(cli.main)
+
+    def test_missing_tk_gives_installation_advice(self, monkeypatch, capsys):
+        """A missing Tk should be actionable, not an import traceback."""
+        import builtins
+
+        from tpsreg import cli
+
+        real_import = builtins.__import__
+
+        def no_tkinter(name, *args, **kwargs):
+            if name == "tkinter":
+                raise ImportError("No module named 'tkinter'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", no_tkinter)
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli.main()
+
+        assert exc_info.value.code == 1
+        message = capsys.readouterr().err
+        assert "Tk" in message
+        # It must name a concrete install command, not just state the problem.
+        assert "install" in message.lower()
+
+    @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+    def test_platform_advice_is_available_everywhere(self, monkeypatch, platform):
+        from tpsreg import cli
+
+        monkeypatch.setattr(sys, "platform", platform)
+        assert cli._tk_platform_help().strip()
 
 
 class TestLogFileLocation:

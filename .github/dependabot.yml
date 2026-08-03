@@ -1,0 +1,27 @@
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    groups:
+      # One PR per month for routine bumps rather than one per package.
+      python-dependencies:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    ignore:
+      # Torch pins live in the optional extras and are tied to the vendored
+      # MatchAnything model; bump them deliberately, not automatically.
+      - dependency-name: torch
+      - dependency-name: torchvision
+      - dependency-name: pytorch-lightning
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
