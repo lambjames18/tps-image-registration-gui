@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tpsreg.tps import MIN_CONTROL_POINTS, ThinPlateSplineTransform
+from tpsreg.tps import (
+    MIN_CONTROL_POINTS,
+    ThinPlateSplineTransform,
+    loocv_residuals,
+    select_regularization,
+)
 
 
 class TestValidation:
@@ -477,3 +482,238 @@ class TestInstalledFields:
         tform = ThinPlateSplineTransform()
         tform.set_field(self._field((2, 20, 30)))
         assert tform.size == (20, 30)
+
+
+def _grid(n=5, extent=90.0):
+    axis = np.linspace(10.0, extent, n)
+    return np.stack(np.meshgrid(axis, axis), -1).reshape(-1, 2)
+
+
+def _bulge(points, amplitude=0.35, sigma=35.0):
+    """A real local deformation, distinct from noise."""
+    offset = points - np.array([50.0, 50.0])
+    radius = np.linalg.norm(offset, axis=1, keepdims=True)
+    return points + amplitude * offset * np.exp(-((radius / sigma) ** 2))
+
+
+class TestRegularization:
+    """Letting the spline miss its control points."""
+
+    def test_off_by_default(self, square_grid_points):
+        tform = ThinPlateSplineTransform()
+        tform.estimate(square_grid_points, square_grid_points, (100, 100))
+        assert tform.regularization == 0.0
+        assert tform.effective_regularization == 0.0
+
+    def test_zero_still_interpolates_exactly(self, square_grid_points, rng):
+        """The default must not change what this has always done."""
+        dst = square_grid_points
+        src = square_grid_points + rng.normal(0, 3, dst.shape)
+
+        tform = ThinPlateSplineTransform(regularization=0.0)
+        tform.estimate(src, dst, (100, 100))
+
+        np.testing.assert_allclose(tform.map(dst), src, atol=1e-6)
+
+    def test_a_positive_strength_stops_interpolating(self, square_grid_points, rng):
+        dst = square_grid_points
+        src = square_grid_points + rng.normal(0, 3, dst.shape)
+
+        tform = ThinPlateSplineTransform(regularization=0.1)
+        tform.estimate(src, dst, (100, 100))
+
+        assert np.linalg.norm(tform.map(dst) - src, axis=1).max() > 1e-3
+
+    def test_more_smoothing_means_less_bending(self, square_grid_points, rng):
+        """The point of it: trade fidelity at the points for smoothness."""
+        from tpsreg import metrics
+
+        dst = square_grid_points
+        src = square_grid_points + rng.normal(0, 4, dst.shape)
+
+        energies = []
+        for strength in (0.0, 0.001, 0.01, 0.1):
+            tform = ThinPlateSplineTransform(regularization=strength)
+            tform.estimate(src, dst, (100, 100))
+            energies.append(metrics.bending_energy(tform))
+
+        assert energies == sorted(energies, reverse=True), energies
+
+    def test_an_affine_is_unaffected_by_smoothing(self, square_grid_points):
+        """There is no bending to penalise, so nothing should change."""
+        dst = square_grid_points
+        src = square_grid_points * 1.5 + np.array([4.0, -3.0])
+        query = np.array([[25.0, 35.0], [70.0, 60.0]])
+
+        exact = ThinPlateSplineTransform()
+        exact.estimate(src, dst, (100, 100))
+        smoothed = ThinPlateSplineTransform(regularization=0.5)
+        smoothed.estimate(src, dst, (100, 100))
+
+        np.testing.assert_allclose(smoothed.map(query), exact.map(query), atol=1e-6)
+
+    def test_a_negative_strength_is_refused(self, square_grid_points):
+        """Subtracting from the diagonal is a different, unstable system."""
+        tform = ThinPlateSplineTransform(regularization=-0.1)
+        with pytest.raises(ValueError, match="must not be negative"):
+            tform.estimate(square_grid_points, square_grid_points, (100, 100))
+
+    def test_an_unknown_keyword_is_refused(self, square_grid_points):
+        tform = ThinPlateSplineTransform(regularization="strong")
+        with pytest.raises(ValueError, match="Unknown regularization"):
+            tform.estimate(square_grid_points, square_grid_points, (100, 100))
+
+    def test_the_strength_is_roughly_scale_invariant(self, rng):
+        """The same number should mean roughly the same at any image size.
+
+        Exactly invariant is not achievable: r**2 log(r**2) is not
+        scale-homogeneous. Within a factor of a few is enough for the number
+        to be usable and for the automatic search to start in the right place.
+        """
+        axis = np.linspace(0.1, 0.9, 4)
+        unit = np.stack(np.meshgrid(axis, axis), -1).reshape(-1, 2)
+        noise = rng.normal(0, 0.02, unit.shape)
+
+        relative = []
+        for extent in (100.0, 20000.0):
+            dst = unit * extent
+            tform = ThinPlateSplineTransform(regularization=0.01)
+            tform.estimate(dst + noise * extent, dst, (int(extent), int(extent)))
+            relative.append(
+                np.linalg.norm(tform.map(dst) - (dst + noise * extent), axis=1).mean()
+                / extent
+            )
+
+        ratio = max(relative) / min(relative)
+        assert ratio < 5, f"a 200x scale change moved the effect {ratio:.1f}x"
+
+
+class TestClosedFormLeaveOneOut:
+    """The identity that makes the automatic search affordable."""
+
+    @staticmethod
+    def _brute_force(src, dst, strength):
+        """Refit K times, the obvious way, for comparison.
+
+        The strength is rescaled for each reduced set so every fold uses the
+        same *absolute* penalty. The strength is normalised by a kernel scale
+        computed from the points, and dropping one changes that scale, so
+        passing the same normalised number would quietly be penalising each
+        fold slightly differently -- and the identity being checked here holds
+        for a fixed penalty.
+        """
+        from tpsreg.tps import _kernel_scale
+
+        full_scale = _kernel_scale(dst)
+        residuals = np.empty(len(dst))
+        for index in range(len(dst)):
+            keep = np.ones(len(dst), dtype=bool)
+            keep[index] = False
+            rescaled = strength * full_scale / _kernel_scale(dst[keep])
+            reduced = ThinPlateSplineTransform(regularization=rescaled)
+            reduced.estimate(src[keep], dst[keep])
+            residuals[index] = np.linalg.norm(
+                reduced.map(dst[index : index + 1])[0] - src[index]
+            )
+        return residuals
+
+    @pytest.mark.parametrize("strength", [0.001, 0.01, 0.1])
+    def test_it_matches_refitting(self, strength, rng):
+        """If these ever disagree, the fast path is silently wrong."""
+        dst = _grid()
+        src = dst + rng.normal(0, 2, dst.shape)
+
+        np.testing.assert_allclose(
+            loocv_residuals(src, dst, strength),
+            self._brute_force(src, dst, strength),
+            rtol=1e-6,
+            atol=1e-9,
+        )
+
+    def test_one_residual_per_point(self, rng):
+        dst = _grid()
+        assert loocv_residuals(dst + rng.normal(0, 1, dst.shape), dst, 0.01).shape == (
+            len(dst),
+        )
+
+    def test_an_exact_fit_has_small_residuals_for_clean_points(self):
+        dst = _grid()
+        residuals = loocv_residuals(dst + np.array([3.0, -2.0]), dst, 0.0)
+        assert residuals.max() < 1e-6
+
+
+class TestSelectingTheStrength:
+    """Cross-validated choice."""
+
+    def test_clean_points_get_no_smoothing(self):
+        """Nothing to smooth, so it should not smooth."""
+        dst = _grid()
+        best, _, _ = select_regularization(_bulge(dst), dst)
+        assert best == 0.0
+
+    def test_a_pure_translation_gets_no_smoothing(self):
+        """Every strength fits this perfectly; the tie must go to zero.
+
+        Without an absolute floor on the tie tolerance this picked an
+        arbitrary strength, decided by floating-point noise among scores that
+        were all around 1e-15.
+        """
+        dst = _grid()
+        best, _, _ = select_regularization(dst + np.array([3.0, -2.0]), dst)
+        assert best == 0.0
+
+    def test_noisy_points_get_some_smoothing(self, rng):
+        dst = _grid()
+        best, _, _ = select_regularization(
+            _bulge(dst) + rng.normal(0, 2, dst.shape), dst
+        )
+        assert best > 0
+
+    def test_it_returns_the_whole_curve(self):
+        dst = _grid()
+        best, candidates, scores = select_regularization(_bulge(dst), dst)
+        assert len(candidates) == len(scores)
+        assert best in candidates
+
+    def test_a_custom_candidate_list_is_honoured(self, rng):
+        dst = _grid()
+        src = _bulge(dst) + rng.normal(0, 2, dst.shape)
+        candidates = np.array([0.0, 0.05, 0.5])
+
+        best, returned, scores = select_regularization(src, dst, candidates)
+        np.testing.assert_array_equal(returned, candidates)
+        assert best in candidates
+        assert len(scores) == 3
+
+    @pytest.mark.parametrize("noise", [1.0, 2.0, 4.0])
+    def test_the_automatic_choice_beats_exact_interpolation(self, noise, rng):
+        """The claim this feature rests on, over the whole field.
+
+        Exact interpolation reproduces click errors exactly, so with noisy
+        points it is fitting the noise. Measured against the deformation that
+        actually generated the data.
+        """
+        dst = _grid()
+        truth = _bulge(dst)
+        src = truth + rng.normal(0, noise, dst.shape)
+
+        auto = ThinPlateSplineTransform(regularization="auto")
+        auto.estimate(src, dst, (100, 100))
+        exact = ThinPlateSplineTransform()
+        exact.estimate(src, dst, (100, 100))
+
+        query = rng.uniform(10, 90, size=(2000, 2))
+        expected = _bulge(query)
+        auto_error = np.linalg.norm(auto.map(query) - expected, axis=1).mean()
+        exact_error = np.linalg.norm(exact.map(query) - expected, axis=1).mean()
+
+        assert auto_error <= exact_error + 1e-9
+
+    def test_auto_records_what_it_chose(self, rng):
+        dst = _grid()
+        tform = ThinPlateSplineTransform(regularization="auto")
+        tform.estimate(_bulge(dst) + rng.normal(0, 2, dst.shape), dst, (100, 100))
+
+        assert tform.regularization == "auto"
+        assert isinstance(tform.effective_regularization, float)
+        assert tform.effective_regularization > 0

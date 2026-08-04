@@ -891,6 +891,79 @@ class TestQualityFlagging:
         assert "does not fold" in report
 
 
+class TestSmoothingSelector:
+    """The control that drives regularization."""
+
+    def test_it_starts_off(self, app):
+        """Smoothing changes results, so it is opt-in."""
+        import tpsreg.GUI as gui_module
+
+        assert app.smoothing_var.get() == gui_module.SMOOTHING_OFF
+        assert app.presenter.regularization == 0.0
+
+    def test_choosing_automatic_reaches_the_presenter(self, app):
+        import tpsreg.GUI as gui_module
+
+        app.smoothing_var.set(gui_module.SMOOTHING_AUTO)
+        app._on_smoothing_changed()
+        assert app.presenter.regularization == "auto"
+
+    def test_choosing_off_again_turns_it_off(self, app):
+        import tpsreg.GUI as gui_module
+
+        app.smoothing_var.set(gui_module.SMOOTHING_AUTO)
+        app._on_smoothing_changed()
+        app.smoothing_var.set(gui_module.SMOOTHING_OFF)
+        app._on_smoothing_changed()
+        assert app.presenter.regularization == 0.0
+
+    def test_manual_applies_the_number_entered(self, app, monkeypatch):
+        import tpsreg.GUI as gui_module
+
+        monkeypatch.setattr(gui_module.simpledialog, "askfloat", lambda *a, **k: 0.25)
+        app.smoothing_var.set(gui_module.SMOOTHING_MANUAL)
+        app._on_smoothing_changed()
+        assert app.presenter.regularization == 0.25
+
+    def test_cancelling_manual_leaves_the_setting_alone(self, app, monkeypatch):
+        """And puts the selector back, rather than lying about the state."""
+        import tpsreg.GUI as gui_module
+
+        monkeypatch.setattr(gui_module.simpledialog, "askfloat", lambda *a, **k: None)
+        app.smoothing_var.set(gui_module.SMOOTHING_MANUAL)
+        app._on_smoothing_changed()
+
+        assert app.presenter.regularization == 0.0
+        assert app.smoothing_var.get() == gui_module.SMOOTHING_OFF
+
+    def test_the_selector_follows_the_presenter(self, app):
+        import tpsreg.GUI as gui_module
+
+        app.presenter.set_regularization("auto")
+        app._sync_smoothing_selector()
+        assert app.smoothing_var.get() == gui_module.SMOOTHING_AUTO
+
+        app.presenter.set_regularization(0.1)
+        app._sync_smoothing_selector()
+        assert app.smoothing_var.get() == gui_module.SMOOTHING_MANUAL
+
+        app.presenter.set_regularization(0.0)
+        app._sync_smoothing_selector()
+        assert app.smoothing_var.get() == gui_module.SMOOTHING_OFF
+
+    def test_a_new_project_turns_it_off(self, app, monkeypatch):
+        import tpsreg.GUI as gui_module
+
+        monkeypatch.setattr(gui_module.simpledialog, "askfloat", lambda *a, **k: 0.5)
+        app.smoothing_var.set(gui_module.SMOOTHING_MANUAL)
+        app._on_smoothing_changed()
+        assert app.presenter.regularization == 0.5
+
+        app.presenter.new_project()
+        assert app.presenter.regularization == 0.0
+        assert app.smoothing_var.get() == gui_module.SMOOTHING_OFF
+
+
 class TestLoadingThroughTheRealView:
     """Driving the real window with real files."""
 

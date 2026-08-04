@@ -12,7 +12,7 @@ import tkinter as tk
 from abc import ABC, abstractmethod
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import numpy as np
 from PIL import Image, ImageTk
@@ -23,6 +23,12 @@ from tpsreg.resources_util import apply_window_icon, theme_path
 from tpsreg.theme import apply_to_window, get_palette, palette_of
 
 logger = logging.getLogger(__name__)
+
+#: Labels for the smoothing selector. Plain words rather than "regularization"
+#: because the control has to mean something at a glance.
+SMOOTHING_OFF = "Off"
+SMOOTHING_AUTO = "Automatic"
+SMOOTHING_MANUAL = "Manual..."
 
 
 class ViewInterface(ABC):
@@ -541,6 +547,67 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             command=self.presenter.toggle_match_resolutions,
         )
         self.match_resolutions_check.pack(side="left", padx=(20, 5))
+
+        # Smoothing. Off by default, because it changes results and should be
+        # asked for; "Automatic" is the one worth reaching for, since the
+        # manual number has no units anyone has an intuition about.
+        ttk.Label(controls_frame, text="Smoothing:").pack(side="left", padx=(20, 5))
+        self.smoothing_var = tk.StringVar(value=SMOOTHING_OFF)
+        self.smoothing_combo = ttk.Combobox(
+            controls_frame,
+            textvariable=self.smoothing_var,
+            values=[SMOOTHING_OFF, SMOOTHING_AUTO, SMOOTHING_MANUAL],
+            state="readonly",
+            width=11,
+        )
+        self.smoothing_combo.pack(side="left", padx=5)
+        self.smoothing_combo.bind("<<ComboboxSelected>>", self._on_smoothing_changed)
+
+    def _on_smoothing_changed(self, event=None):
+        """Apply the smoothing choice, asking for a number if it needs one."""
+        choice = self.smoothing_var.get()
+
+        if choice == SMOOTHING_OFF:
+            self.presenter.set_regularization(0.0)
+            self.set_status("Smoothing off: the fit passes through every point")
+            return
+
+        if choice == SMOOTHING_AUTO:
+            self.presenter.set_regularization("auto")
+            self.set_status(
+                "Smoothing chosen automatically by cross-validation when estimating"
+            )
+            return
+
+        current = self.presenter.regularization
+        strength = simpledialog.askfloat(
+            "Smoothing strength",
+            "Strength (0 = pass through every point).\n\n"
+            "Normalised, so the same value means roughly the same thing at any "
+            "image size. Useful values are typically between 0.001 and 1.",
+            initialvalue=float(current) if isinstance(current, (int, float)) else 0.01,
+            minvalue=0.0,
+            parent=self,
+        )
+
+        if strength is None:
+            # Cancelled: put the selector back rather than leaving it lying
+            # about a setting that was not applied.
+            self._sync_smoothing_selector()
+            return
+
+        self.presenter.set_regularization(strength)
+        self.set_status(f"Smoothing strength set to {strength:g}")
+
+    def _sync_smoothing_selector(self):
+        """Point the selector at whatever the presenter actually has."""
+        current = self.presenter.regularization
+        if isinstance(current, str):
+            self.smoothing_var.set(SMOOTHING_AUTO)
+        elif current:
+            self.smoothing_var.set(SMOOTHING_MANUAL)
+        else:
+            self.smoothing_var.set(SMOOTHING_OFF)
 
     def _bind_events(self):
         """Bind keyboard and mouse events."""
@@ -1668,6 +1735,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.awaiting_corresponding_point = None
         self._drag = None
         self.point_quality = None
+        self._sync_smoothing_selector()
         self._refresh_edit_menu()
 
         # Reset slice control
