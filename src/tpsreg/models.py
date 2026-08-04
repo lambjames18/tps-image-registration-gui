@@ -1616,6 +1616,7 @@ class TransformManager:
         self._check_valid_points(src_points, dst_points)
 
         from tpsreg.tps import ThinPlateSplineTransform
+        from tpsreg.warping import interpolate_fields
 
         # Get unique slices with points
         slice_indices = np.unique(src_points[:, 0]).astype(int)
@@ -1648,15 +1649,21 @@ class TransformManager:
                     upper_idx = min(upper_slices)
                     alpha = (i - lower_idx) / (upper_idx - lower_idx)
 
-                    # Simple linear interpolation of parameters (not ideal for TPS)
-                    lower_params = transforms[lower_idx].params
-                    upper_params = transforms[upper_idx].params
-                    interp_params = (1 - alpha) * lower_params + alpha * upper_params
+                    # Blend the displacement fields, not the coefficients.
+                    # Neighbouring slices are fitted to their own control
+                    # points, so their coefficient vectors differ in length
+                    # and meaning; only the fields share a grid. Building them
+                    # on demand keeps the keyed slices themselves stored as
+                    # coefficients.
+                    lower_field = transforms[lower_idx].build_field(output_shape)
+                    upper_field = transforms[upper_idx].build_field(output_shape)
 
                     tform = ThinPlateSplineTransform()
-                    tform.params = interp_params
-                    tform._estimated = True
                     tform.affine_only = transform_type == TransformType.TPS_AFFINE
+                    tform.set_field(
+                        interpolate_fields(lower_field, upper_field, alpha),
+                        size=output_shape,
+                    )
                     transforms[i] = tform
                 elif lower_slices:
                     transforms[i] = transforms[max(lower_slices)]
@@ -1673,18 +1680,25 @@ class TransformManager:
         output_shape: tuple[int, int] | None = None,
         order: int = 0,
     ) -> np.ndarray:
-        """Apply transformation to an image."""
+        """Apply transformation to an image.
+
+        Routed through :func:`tpsreg.warping.warp`, which is
+        ``skimage.transform.warp`` for ordinary images and switches to tiling
+        once the output is large enough that one coordinate array for the
+        whole thing would be the limiting factor.
+        """
         try:
+            from tpsreg.warping import warp as warp_image
+
             if output_shape is None:
                 output_shape = image.shape[:2]
 
-            warped = transform.warp(
+            warped = warp_image(
                 image,
                 tform,
                 output_shape=output_shape,
-                mode="constant",
-                cval=0,
                 order=order,
+                cval=0,
             )
 
             logger.debug("Applied transform to image of shape %s", image.shape)
