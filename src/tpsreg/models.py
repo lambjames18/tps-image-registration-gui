@@ -1563,8 +1563,18 @@ class TransformManager:
         dst_points: np.ndarray,
         transform_type: TransformType,
         output_shape: tuple[int, int],
+        regularization: float | str = 0.0,
     ) -> Any:
-        """Estimate transformation parameters from point correspondences."""
+        """Estimate transformation parameters from point correspondences.
+
+        Parameters
+        ----------
+        regularization:
+            0 to interpolate the control points exactly, a positive number to
+            let the fit miss them in exchange for smoothness, or "auto" to
+            choose by cross-validation. See
+            :meth:`tpsreg.tps.ThinPlateSplineTransform.estimate`.
+        """
         self._check_valid_points(src_points, dst_points)
 
         try:
@@ -1572,7 +1582,9 @@ class TransformManager:
             from tpsreg.tps import ThinPlateSplineTransform
 
             affine_only = transform_type == TransformType.TPS_AFFINE
-            tform = ThinPlateSplineTransform(affine_only=affine_only)
+            tform = ThinPlateSplineTransform(
+                affine_only=affine_only, regularization=regularization
+            )
             tform.estimate(
                 src_points,
                 dst_points,
@@ -1594,6 +1606,7 @@ class TransformManager:
         transform_type: TransformType,
         output_shape: tuple[int, int],
         n_slices: int | None = None,
+        regularization: float | str = 0.0,
     ) -> dict[int, Any]:
         """Estimate transformations for every slice of a stack.
 
@@ -1634,7 +1647,7 @@ class TransformManager:
             dst_pts = dst_points[mask, 1:]
 
             tform: ThinPlateSplineTransform = self.estimate_transform(
-                src_pts, dst_pts, transform_type, output_shape
+                src_pts, dst_pts, transform_type, output_shape, regularization
             )
             transforms[slice_idx] = tform
 

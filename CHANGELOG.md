@@ -8,6 +8,34 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Optional smoothing of the spline (regularization), off by default. Set it
+  from the **Smoothing** selector in the top bar: *Off*, *Automatic*, or a
+  number.
+
+  Exact interpolation is not the same as an accurate transform. A thin-plate
+  spline passes through every control point, which means it also reproduces
+  every click error exactly, contorting itself to honour mistakes. Smoothing
+  relaxes that, buying a better fit to the real deformation with the slack.
+
+  *Automatic* chooses the strength by leave-one-out cross-validation, which
+  matters because the number is in units nobody has an intuition for and the
+  right value depends on how noisy the clicks are relative to the deformation.
+  On synthetic data with a known answer and 1.5 px of click noise it roughly
+  halved the error against the true deformation; with clean points it selects
+  zero and changes nothing.
+
+  The cross-validation uses a closed form rather than refitting once per
+  point: for a linear smoother the leave-one-out residual is `w_i / M_ii`
+  from a single fit. Verified against brute-force refitting to 1e-13, at a
+  fourteenth of the cost for 16 control points and better above that.
+
+  The strength is normalised by the kernel magnitude so the same number means
+  roughly the same thing at any image size — within about twofold across a
+  200-fold change in coordinates, since `r²log(r²)` is not scale-homogeneous.
+
+  New: `tpsreg.tps.loocv_residuals`, `tpsreg.tps.select_regularization`,
+  `ThinPlateSplineTransform(regularization=...)`, and
+  `ApplicationPresenter.set_regularization`.
 - Registration quality metrics (`tpsreg.metrics`), reachable from
   **View → Check registration quality**.
 

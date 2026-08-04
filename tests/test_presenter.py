@@ -460,6 +460,54 @@ class TestAssessingTheTransform:
         assert fake_view.errors
 
 
+class TestSmoothing:
+    """The regularization setting the view drives."""
+
+    def test_off_by_default(self, presenter):
+        """It changes results, so it should be asked for."""
+        assert presenter.regularization == 0.0
+
+    def test_a_strength_can_be_set(self, presenter):
+        presenter.set_regularization(0.05)
+        assert presenter.regularization == 0.05
+
+    def test_auto_is_accepted(self, presenter):
+        presenter.set_regularization("auto")
+        assert presenter.regularization == "auto"
+
+    def test_auto_is_case_insensitive(self, presenter):
+        presenter.set_regularization("Auto")
+        assert presenter.regularization == "auto"
+
+    def test_a_negative_strength_is_refused(self, presenter):
+        with pytest.raises(ValueError, match="must not be negative"):
+            presenter.set_regularization(-1.0)
+
+    def test_an_unknown_word_is_refused(self, presenter):
+        with pytest.raises(ValueError, match="Unknown regularization"):
+            presenter.set_regularization("lots")
+
+    def test_a_new_project_turns_it_off_again(self, presenter):
+        presenter.set_regularization("auto")
+        presenter.new_project()
+        assert presenter.regularization == 0.0
+
+    def test_it_reaches_the_estimated_transform(self, loaded):
+        """The setting is useless if it does not get as far as the fit."""
+        axis = np.linspace(4.0, 40.0, 4)
+        grid = np.stack(np.meshgrid(axis, axis), -1).reshape(-1, 2)
+        for x, y in grid:
+            loaded.add_point("source", int(x), int(y))
+            loaded.add_point("destination", int(x) + 1, int(y))
+
+        loaded.set_regularization(0.25)
+        src, dst = loaded.get_points()
+        tform = loaded.transform_manager.estimate_transform(
+            src, dst, TransformType.TPS, (50, 50), loaded.regularization
+        )
+        assert tform.effective_regularization == 0.25
+
+
 class TestDisplayState:
     """View mode, slice and resolution settings."""
 

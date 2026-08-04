@@ -70,6 +70,12 @@ class ApplicationPresenter:
         self.clahe_active_dest = False
         self.match_resolutions = False
 
+        #: Smoothing strength for the spline. 0 interpolates the control
+        #: points exactly, which is what this has always done; "auto" picks a
+        #: strength by cross-validation. Off by default: it changes results,
+        #: so it should be asked for.
+        self.regularization: float | str = 0.0
+
         # View reference (will be set by view)
         self.view = None
 
@@ -104,6 +110,7 @@ class ApplicationPresenter:
             self.clahe_active_source = False
             self.clahe_active_dest = False
             self.match_resolutions = False
+            self.regularization = 0.0
 
             # Clear paths
             self.source_points_path = None
@@ -767,6 +774,7 @@ class ApplicationPresenter:
                 dst_points,
                 transform_type or TransformType.TPS,
                 output_shape,
+                self.regularization,
             )
 
             return metrics.assess(
@@ -783,6 +791,36 @@ class ApplicationPresenter:
                 f"Failed to assess the transform: {e!s}, ({parse_error()})"
             )
             return None
+
+    def set_regularization(self, value: float | str) -> None:
+        """Set the smoothing strength used when estimating.
+
+        Parameters
+        ----------
+        value:
+            0 to interpolate the control points exactly, a positive number to
+            smooth by that much, or "auto" to let cross-validation decide.
+
+        Raises
+        ------
+        ValueError
+            If the value is neither a non-negative number nor "auto".
+        """
+        if isinstance(value, str):
+            if value.lower() != "auto":
+                raise ValueError(
+                    f'Unknown regularization: {value!r}. Expected a number or "auto".'
+                )
+            self.regularization = "auto"
+        else:
+            strength = float(value)
+            if strength < 0:
+                raise ValueError(
+                    f"Regularization must not be negative; got {strength}."
+                )
+            self.regularization = strength
+
+        logger.info("Regularization set to %s", self.regularization)
 
     def clear_points(self, slice_only: bool = True) -> None:
         """Clear control points."""
@@ -997,7 +1035,11 @@ class ApplicationPresenter:
 
                 # Estimate transform
                 tform = self.transform_manager.estimate_transform(
-                    src_points, dst_points, transform_type, output_shape
+                    src_points,
+                    dst_points,
+                    transform_type,
+                    output_shape,
+                    self.regularization,
                 )
 
             # Apply transform
@@ -1065,6 +1107,7 @@ class ApplicationPresenter:
                     transform_type,
                     output_shape,
                     n_slices=src_stack.shape[0],
+                    regularization=self.regularization,
                 )
 
             # Apply transformation
@@ -1247,7 +1290,11 @@ class ApplicationPresenter:
 
             # Estimate transform
             tform = self.transform_manager.estimate_transform(
-                src_points, dst_points, transform_type, output_shape=output_shape
+                src_points,
+                dst_points,
+                transform_type,
+                output_shape=output_shape,
+                regularization=self.regularization,
             )
 
             # Export

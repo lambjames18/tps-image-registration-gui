@@ -146,7 +146,7 @@ you can dismiss.
 
 The left and right panels show the source and destination images. The top bar
 controls the slice (for 3D data), the displayed modality, CLAHE, zoom, view
-linking, and resolution matching. The bottom bar shows status and a progress bar
+linking, resolution matching, and smoothing. The bottom bar shows status and a progress bar
 during long operations.
 
 Left-click places a control point. Right-clicking near one removes the pair.
@@ -200,6 +200,29 @@ that number is around 1e-12 whether the points are good or badly wrong.
 | Jacobian determinant | Goes negative where the mapping folds over itself, producing mirrored patches. Invisible to any per-point measure, since the points on either side of a fold are still matched exactly. |
 | Bending energy | How far the warp is from a plain affine. Zero for a pure affine, growing as the deformation gets more local. |
 | Coverage | Fraction of the image the points enclose. Everything outside is extrapolated. |
+
+### Smoothing
+
+Off by default. The top bar has a **Smoothing** selector with *Off*,
+*Automatic*, and a manual number.
+
+Exact interpolation is not the same as an accurate transform. The spline
+passes through every control point you place, which means it also reproduces
+every click error exactly — it contorts itself to honour your mistakes.
+Smoothing lets the fit miss the points a little in exchange for a better match
+to the real deformation.
+
+*Automatic* picks the strength by leave-one-out cross-validation, which is
+worth using in preference to the manual number: the strength has no units
+anyone has an intuition for, and the right value depends on how noisy your
+clicks are relative to the distortion you are correcting. On synthetic data
+with a known answer and 1.5 px of click noise it roughly halved the error
+against the true deformation. With clean points it selects zero and changes
+nothing, so it costs you nothing to leave on.
+
+The manual number is normalised, so the same value means roughly the same
+thing whatever the image size. Useful values are typically between 0.001 and
+1.
 
 Leave-one-out needs roughly nine well-spread points to mean anything: it asks
 the remaining points to predict the held-out one, and with only a handful that
