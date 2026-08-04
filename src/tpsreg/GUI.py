@@ -17,9 +17,10 @@ from tkinter import filedialog, messagebox, ttk
 import numpy as np
 from PIL import Image, ImageTk
 
-from tpsreg import __version__
+from tpsreg import __version__, overlays, validation
 from tpsreg.presenter import ApplicationPresenter, CropMode, DataFormat, TransformType
 from tpsreg.resources_util import apply_window_icon, theme_path
+from tpsreg.theme import apply_to_window, get_palette, palette_of
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,12 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.show_points = True
         self.awaiting_corresponding_point = None
 
+        #: In-progress marker drag, or None. See _on_canvas_press.
+        self._drag: dict | None = None
+
+        #: Directory the last file dialog used, so the next one starts there.
+        self._last_directory: Path | None = None
+
         # Setup UI
         self._setup_window()
         self._setup_logging()
@@ -108,18 +115,15 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         The colours are applied either way, so a theme that refuses to load
         degrades the look rather than preventing the application from starting.
         """
-        if style == "dark":
-            self.bg = "#333333"
-            self.fg = "#ffffff"
-            self.hl = "#229fff"
-            self.hl2 = "#00bb00"
-        elif style == "light":
-            self.bg = "#ffffff"
-            self.fg = "#000000"
-            self.hl = "#007fff"
-            self.hl2 = "#00bb00"
-        else:
-            raise ValueError(f"Unknown style: {style!r}. Expected 'dark' or 'light'.")
+        # get_palette raises on an unknown style, which is the check that used
+        # to live here.
+        self.palette = get_palette(style)
+
+        # Short aliases kept for the existing widget construction below.
+        self.bg = self.palette.background
+        self.fg = self.palette.foreground
+        self.hl = self.palette.accent
+        self.hl2 = self.palette.success
 
         s = ttk.Style(self)
         self.theme_name = self._load_azure_theme(s, style)
@@ -273,14 +277,21 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         file_menu.add_command(label="Exit", command=self.quit)
 
         # Edit menu
-        edit_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="Edit", menu=edit_menu)
-        edit_menu.add_command(label="Undo", command=self._on_undo, accelerator="Ctrl+Z")
-        edit_menu.add_command(label="Redo", command=self._on_redo, accelerator="Ctrl+Y")
-        edit_menu.add_separator()
-        edit_menu.add_command(label="Clear points", command=self._on_clear_points)
-        edit_menu.add_separator()
-        edit_menu.add_command(label="Set resolution", command=self._on_set_resolution)
+        self.edit_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Edit", menu=self.edit_menu)
+        self.edit_menu.add_command(
+            label="Undo", command=self._on_undo, accelerator="Ctrl+Z"
+        )
+        self.edit_menu.add_command(
+            label="Redo", command=self._on_redo, accelerator="Ctrl+Y"
+        )
+        self.edit_menu.add_separator()
+        self.edit_menu.add_command(label="Clear points", command=self._on_clear_points)
+        self.edit_menu.add_separator()
+        self.edit_menu.add_command(
+            label="Set resolution", command=self._on_set_resolution
+        )
+        self._refresh_edit_menu()
 
         # View menu
         view_menu = tk.Menu(self.menubar, tearoff=0)
@@ -348,13 +359,13 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         left_h_scrollbar = ttk.Scrollbar(
             self.left_frame,
             orient=tk.HORIZONTAL,
-            command=self.left_canvas.xview,
+            command=lambda *args: self._on_scroll("source", "x", *args),
             cursor="sb_h_double_arrow",
         )
         left_v_scrollbar = ttk.Scrollbar(
             self.left_frame,
             orient=tk.VERTICAL,
-            command=self.left_canvas.yview,
+            command=lambda *args: self._on_scroll("source", "y", *args),
             cursor="sb_v_double_arrow",
         )
         self.left_canvas.config(
@@ -372,13 +383,13 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         right_h_scrollbar = ttk.Scrollbar(
             self.right_frame,
             orient=tk.HORIZONTAL,
-            command=self.right_canvas.xview,
+            command=lambda *args: self._on_scroll("destination", "x", *args),
             cursor="sb_h_double_arrow",
         )
         right_v_scrollbar = ttk.Scrollbar(
             self.right_frame,
             orient=tk.VERTICAL,
-            command=self.right_canvas.yview,
+            command=lambda *args: self._on_scroll("destination", "y", *args),
             cursor="sb_v_double_arrow",
         )
         self.right_canvas.config(
@@ -501,6 +512,18 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.zoom_dst_combo.pack(side="left", padx=5)
         self.zoom_dst_combo.bind("<<ComboboxSelected>>", self._on_zoom_changed)
 
+        # Link the two viewers. Comparing the same feature side by side means
+        # keeping both panels at the same zoom and scroll position, which
+        # otherwise has to be done by hand after every adjustment.
+        self.link_views_var = tk.BooleanVar(value=False)
+        self.link_views_check = ttk.Checkbutton(
+            controls_frame,
+            text="Link views",
+            variable=self.link_views_var,
+            command=self._on_link_views_changed,
+        )
+        self.link_views_check.pack(side="left", padx=(20, 5))
+
         # Match resolutions control
         self.match_resolutions_var = tk.BooleanVar(value=False)
         self.match_resolutions_check = ttk.Checkbutton(
@@ -521,12 +544,26 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.bind("<Control-minus>", lambda e: self._on_zoom_out())
         self.bind("<Control-0>", lambda e: self._on_zoom_reset())
 
-        # Mouse events for canvases
+        # Mouse events for canvases. Placing a point happens on release, not
+        # press, so that a press landing on an existing marker can turn into a
+        # drag instead. See _on_canvas_press.
         self.left_canvas.bind(
-            "<Button-1>", lambda e: self._on_canvas_click(e, "source")
+            "<Button-1>", lambda e: self._on_canvas_press(e, "source")
         )
         self.right_canvas.bind(
-            "<Button-1>", lambda e: self._on_canvas_click(e, "destination")
+            "<Button-1>", lambda e: self._on_canvas_press(e, "destination")
+        )
+        self.left_canvas.bind(
+            "<B1-Motion>", lambda e: self._on_canvas_drag(e, "source")
+        )
+        self.right_canvas.bind(
+            "<B1-Motion>", lambda e: self._on_canvas_drag(e, "destination")
+        )
+        self.left_canvas.bind(
+            "<ButtonRelease-1>", lambda e: self._on_canvas_release(e, "source")
+        )
+        self.right_canvas.bind(
+            "<ButtonRelease-1>", lambda e: self._on_canvas_release(e, "destination")
         )
 
         # Mouse motion events for cursor tracking
@@ -549,30 +586,21 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.right_canvas.bind(
             remove_string, lambda e: self._on_canvas_right_click(e, "destination")
         )
-        self.left_canvas.bind(
-            "<MouseWheel>",
-            lambda event: self.left_canvas.yview_scroll(
-                int(-1 * (event.delta / scroll_multiplier)), "units"
-            ),
-        )
-        self.left_canvas.bind(
-            "<Shift-MouseWheel>",
-            lambda event: self.left_canvas.xview_scroll(
-                int(-1 * (event.delta / scroll_multiplier)), "units"
-            ),
-        )
-        self.right_canvas.bind(
-            "<MouseWheel>",
-            lambda event: self.right_canvas.yview_scroll(
-                int(-1 * (event.delta / scroll_multiplier)), "units"
-            ),
-        )
-        self.right_canvas.bind(
-            "<Shift-MouseWheel>",
-            lambda event: self.right_canvas.xview_scroll(
-                int(-1 * (event.delta / scroll_multiplier)), "units"
-            ),
-        )
+        # Routed through _on_scroll so a linked partner panel follows the
+        # wheel as well as the scrollbars.
+        for canvas_type, axis, sequence in (
+            ("source", "y", "<MouseWheel>"),
+            ("source", "x", "<Shift-MouseWheel>"),
+            ("destination", "y", "<MouseWheel>"),
+            ("destination", "x", "<Shift-MouseWheel>"),
+        ):
+            canvas = self.left_canvas if canvas_type == "source" else self.right_canvas
+            canvas.bind(
+                sequence,
+                lambda event, t=canvas_type, a=axis: self._on_scroll(
+                    t, a, "scroll", int(-1 * (event.delta / scroll_multiplier)), "units"
+                ),
+            )
 
     # ========== Event Handlers ==========
 
@@ -594,7 +622,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _on_open_source(self):
         """Handle opening source image."""
-        file_paths = filedialog.askopenfilenames(
+        file_paths = self._ask_open_many(
             title="Open Source Image",
             filetypes=[
                 ("All Supported", "*.ang *.h5 *.dream3d *.tif *.tiff *.png *.jpg"),
@@ -656,7 +684,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _on_open_destination(self):
         """Handle opening destination image."""
-        file_paths = filedialog.askopenfilenames(
+        file_paths = self._ask_open_many(
             title="Open Destination Image",
             filetypes=[
                 ("Image Files", "*.tif *.tiff *.png *.jpg *.dream3d"),
@@ -715,7 +743,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _on_load_source_points(self):
         """Handle loading source control points."""
-        src_path = filedialog.askopenfilename(
+        src_path = self._ask_open(
             title="Load Source Points",
             filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
         )
@@ -725,7 +753,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _on_load_destination_points(self):
         """Handle loading destination control points."""
-        dst_path = filedialog.askopenfilename(
+        dst_path = self._ask_open(
             title="Load Destination Points",
             filetypes=[("Text Files", "*.txt"), ("All Files", "*.*")],
         )
@@ -743,7 +771,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         """Handle opening a project."""
         self.show_progress(True)
         self._on_new_project()
-        file_path = filedialog.askopenfilename(
+        file_path = self._ask_open(
             title="Open Project",
             filetypes=[("Project Files", "*.json"), ("All Files", "*.*")],
         )
@@ -767,7 +795,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _on_save_project_as(self):
         """Handle saving project with new name."""
-        file_path = filedialog.asksaveasfilename(
+        file_path = self._ask_save(
             title="Save Project As",
             defaultextension=".json",
             filetypes=[("Project Files", "*.json"), ("All Files", "*.*")],
@@ -784,7 +812,12 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         if not transform_type:
             return
 
-        file_path = filedialog.asksaveasfilename(
+        # Warn before the file dialog, not after: there is no point choosing a
+        # destination for a transform that will not estimate.
+        if not self._confirm_point_quality(transform_type):
+            return
+
+        file_path = self._ask_save(
             title="Export Transform",
             defaultextension=".npy",
             filetypes=[
@@ -808,6 +841,10 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
         transform_type = self._get_transform_type_dialog()
         if transform_type is None:
+            self.show_progress(False)
+            return
+
+        if not self._confirm_point_quality(transform_type):
             self.show_progress(False)
             return
 
@@ -847,7 +884,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
                 ("All Files", "*.*"),
             ]
 
-        path = filedialog.asksaveasfilename(
+        path = self._ask_save(
             title="Export Corrected Data",
             defaultextension=ftypes[0][1].split(" ")[0].replace("*", ""),
             filetypes=ftypes,
@@ -864,29 +901,128 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.show_progress(False)
         self.set_status(f"Data exported to '{path}'")
 
-    def _on_canvas_click(self, event, canvas_type):
-        """Handle canvas click for point placement."""
-        # Check if appropriate image is loaded
+    #: How close, in screen pixels, a press has to be to a marker to grab it.
+    GRAB_RADIUS_PIXELS = 8
+
+    #: How far a press has to travel before it counts as a drag rather than a
+    #: click. Without this, the shake in an ordinary click would nudge points.
+    DRAG_THRESHOLD_PIXELS = 3
+
+    def _canvas_for(self, canvas_type):
+        """The canvas and zoom scale for one side."""
+        if canvas_type == "source":
+            return self.left_canvas, self.current_src_zoom / 100.0
+        return self.right_canvas, self.current_dst_zoom / 100.0
+
+    def _event_to_image(self, event, canvas_type):
+        """Convert an event's widget coordinates to image coordinates.
+
+        ``canvasx``/``canvasy`` do the whole job: they account for the scroll
+        offset and for the widget's highlight border, which shifts the drawing
+        origin by a pixel. Converting once and dividing once matters -- the
+        older form divided the event and the offset separately and truncated
+        each, which put a click up to a whole image pixel off its target at
+        high zoom, exactly where the precision is wanted.
+        """
+        canvas, scale = self._canvas_for(canvas_type)
+        x = int(canvas.canvasx(event.x) / scale)
+        y = int(canvas.canvasy(event.y) / scale)
+        return x, y
+
+    def _on_canvas_press(self, event, canvas_type):
+        """Begin either a point placement or a marker drag.
+
+        Nothing is committed here. A press that lands on an existing marker
+        arms a drag; anything else arms a placement. Which one actually happens
+        is decided in :meth:`_on_canvas_release`, once it is known whether the
+        mouse moved.
+        """
         if canvas_type == "source" and not self.presenter.source_image:
             self.set_status("No source image loaded")
             return
-        elif canvas_type == "destination" and not self.presenter.destination_image:
+        if canvas_type == "destination" and not self.presenter.destination_image:
             self.set_status("No destination image loaded")
             return
 
-        # Get scrollbar offsets
-        if canvas_type == "source":
-            scale = self.current_src_zoom / 100.0
-            canvas = self.left_canvas
-        else:
-            scale = self.current_dst_zoom / 100.0
-            canvas = self.right_canvas
+        _, scale = self._canvas_for(canvas_type)
+        x, y = self._event_to_image(event, canvas_type)
 
-        # Convert canvas coordinates to image coordinates
-        x = int(event.x / scale)
-        y = int(event.y / scale)
-        x += int(canvas.canvasx(0) / scale)
-        y += int(canvas.canvasy(0) / scale)
+        # The grab radius is in screen pixels, so it stays the same physical
+        # size on screen no matter how far the image is zoomed.
+        index = None
+        if self.show_points:
+            index = self.presenter.find_point_near(
+                canvas_type, x, y, self.GRAB_RADIUS_PIXELS / max(scale, 1e-6)
+            )
+
+        self._drag = {
+            "canvas_type": canvas_type,
+            "index": index,
+            "start": (event.x, event.y),
+            "moved": False,
+            "recorded": False,
+            "position": (x, y),
+        }
+
+        if index is not None:
+            self.set_status(f"Drag to move point {index}, or release to leave it")
+
+    def _on_canvas_drag(self, event, canvas_type):
+        """Track a marker being dragged, updating the display as it goes."""
+        drag = self._drag
+        if drag is None or drag["canvas_type"] != canvas_type:
+            return
+
+        start_x, start_y = drag["start"]
+        if not drag["moved"]:
+            travelled = max(abs(event.x - start_x), abs(event.y - start_y))
+            if travelled < self.DRAG_THRESHOLD_PIXELS:
+                return
+            drag["moved"] = True
+
+        x, y = self._event_to_image(event, canvas_type)
+        drag["position"] = (x, y)
+
+        if drag["index"] is None:
+            # Dragging from empty space is a no-op rather than a stray point.
+            return
+
+        # Move as the mouse moves so the marker follows the cursor. Only the
+        # first step of a gesture is recorded, so the whole drag undoes in one.
+        moved = self.presenter.move_point(
+            canvas_type, drag["index"], x, y, transient=drag["recorded"]
+        )
+        if moved:
+            drag["recorded"] = True
+            self.set_status(f"Point {drag['index']} -> ({x}, {y})")
+
+    def _on_canvas_release(self, event, canvas_type):
+        """Finish a drag, or place a point if the press never became one."""
+        drag = self._drag
+        self._drag = None
+
+        if drag is None or drag["canvas_type"] != canvas_type:
+            return
+
+        if drag["moved"]:
+            if drag["index"] is not None and drag["recorded"]:
+                x, y = drag["position"]
+                self.presenter.commit_point_move()
+                self.set_status(f"Moved point {drag['index']} to ({x}, {y})")
+            return
+
+        # A press that did not move is an ordinary click. Grabbing a marker
+        # and releasing without moving deliberately does nothing, so that a
+        # misjudged click near a point cannot silently place another one.
+        if drag["index"] is not None:
+            self.set_status(f"Point {drag['index']} unchanged")
+            return
+
+        self._place_point(event, canvas_type)
+
+    def _place_point(self, event, canvas_type):
+        """Handle canvas click for point placement."""
+        x, y = self._event_to_image(event, canvas_type)
 
         # Validate point is within image bounds
         if not self.presenter.is_point_in_bounds(canvas_type, x, y):
@@ -935,32 +1071,88 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _on_canvas_motion(self, event, canvas_type):
         """Handle mouse motion for cursor position tracking."""
-        # Get scrollbar offsets and zoom scale
         if canvas_type == "source":
-            scale = self.current_src_zoom / 100.0
-            canvas = self.left_canvas
             image = self.presenter.source_image
         else:
-            scale = self.current_dst_zoom / 100.0
-            canvas = self.right_canvas
             image = self.presenter.destination_image
 
         # Check if image is loaded
         if image is None:
             return
 
-        # Convert canvas coordinates to image coordinates
-        x = int(event.x / scale)
-        y = int(event.y / scale)
-        x += int(canvas.canvasx(0) / scale)
-        y += int(canvas.canvasy(0) / scale)
-
-        # Update cursor label
+        # Same conversion the click handlers use, so the readout and the point
+        # that gets placed can never disagree.
+        x, y = self._event_to_image(event, canvas_type)
         self.cursor_label.config(text=f"Cursor: {x}, {y}")
 
     def _on_canvas_leave(self):
         """Handle mouse leaving canvas."""
         self.cursor_label.config(text="Cursor: --, --")
+
+    # ========== File dialogs ==========
+    #
+    # Every dialog goes through these so it opens where the last one left off.
+    # Tk otherwise starts each one in the process working directory, which
+    # means re-navigating to the data from scratch for the source image, the
+    # destination image, the points, and the export.
+
+    def _remember_directory(self, path):
+        """Record the folder a chosen file lives in."""
+        if not path:
+            return
+        try:
+            self._last_directory = Path(path).expanduser().resolve().parent
+        except (OSError, ValueError):  # pragma: no cover - odd platform paths
+            logger.debug("Could not remember the directory for %s", path, exc_info=True)
+
+    def _initial_directory(self, override=None):
+        """Directory a dialog should open in, or None to let Tk decide."""
+        candidate = override if override is not None else self._last_directory
+        if candidate is None:
+            return None
+        candidate = Path(candidate)
+        return str(candidate) if candidate.is_dir() else None
+
+    def _ask_open(self, initialdir=None, **kwargs):
+        """askopenfilename, starting from the last-used folder."""
+        path = filedialog.askopenfilename(
+            initialdir=self._initial_directory(initialdir), **kwargs
+        )
+        self._remember_directory(path)
+        return path
+
+    def _ask_open_many(self, initialdir=None, **kwargs):
+        """askopenfilenames, starting from the last-used folder."""
+        paths = filedialog.askopenfilenames(
+            initialdir=self._initial_directory(initialdir), **kwargs
+        )
+        if paths:
+            self._remember_directory(paths[0])
+        return paths
+
+    def _ask_save(self, initialdir=None, **kwargs):
+        """asksaveasfilename, starting from the last-used folder."""
+        path = filedialog.asksaveasfilename(
+            initialdir=self._initial_directory(initialdir), **kwargs
+        )
+        self._remember_directory(path)
+        return path
+
+    def _refresh_edit_menu(self):
+        """Grey out Undo and Redo when there is nothing to undo or redo.
+
+        Both used to be permanently enabled and silently did nothing at the
+        ends of the history, which reads as the application ignoring you.
+        """
+        try:
+            self.edit_menu.entryconfig(
+                "Undo", state="normal" if self.presenter.can_undo() else "disabled"
+            )
+            self.edit_menu.entryconfig(
+                "Redo", state="normal" if self.presenter.can_redo() else "disabled"
+            )
+        except tk.TclError:  # pragma: no cover - menu torn down
+            logger.debug("Could not update the Edit menu", exc_info=True)
 
     def _update_point_count(self):
         """Update the point count display for current slice."""
@@ -984,11 +1176,60 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _on_zoom_changed(self, event=None):
         """Handle zoom change."""
+        # With the viewers linked, whichever selector was used drives both.
+        if self.link_views_var.get() and event is not None:
+            widget = getattr(event, "widget", None)
+            if widget is self.zoom_src_combo:
+                self.zoom_dst_var.set(self.zoom_src_var.get())
+            elif widget is self.zoom_dst_combo:
+                self.zoom_src_var.set(self.zoom_dst_var.get())
+
         zoom_str_src = self.zoom_src_var.get().rstrip("%")
         self.current_src_zoom = int(zoom_str_src)
         zoom_str_dst = self.zoom_dst_var.get().rstrip("%")
         self.current_dst_zoom = int(zoom_str_dst)
         self.update_display()
+
+    def _on_link_views_changed(self):
+        """Bring the two viewers together when linking is switched on."""
+        if not self.link_views_var.get():
+            self.set_status("Viewers unlinked")
+            return
+
+        # The source panel wins, so switching the box on has a predictable
+        # result rather than depending on which panel was touched last.
+        self.zoom_dst_var.set(self.zoom_src_var.get())
+        self.current_dst_zoom = self.current_src_zoom
+        self.update_display()
+        self._sync_view("source", "x")
+        self._sync_view("source", "y")
+        self.set_status("Viewers linked: zoom and scrolling stay in step")
+
+    def _on_scroll(self, canvas_type, axis, *args):
+        """Scroll one canvas from its scrollbar, carrying the other along."""
+        canvas, _ = self._canvas_for(canvas_type)
+        view = canvas.xview if axis == "x" else canvas.yview
+        view(*args)
+        self._sync_view(canvas_type, axis)
+
+    def _sync_view(self, canvas_type, axis):
+        """Match the other canvas to this one's scroll position.
+
+        Does nothing unless the viewers are linked. Fractions are used rather
+        than pixels so panels showing differently sized images still line up.
+        """
+        if not self.link_views_var.get():
+            return
+
+        if canvas_type == "source":
+            driver, follower = self.left_canvas, self.right_canvas
+        else:
+            driver, follower = self.right_canvas, self.left_canvas
+
+        if axis == "x":
+            follower.xview_moveto(driver.xview()[0])
+        else:
+            follower.yview_moveto(driver.yview()[0])
 
     def _on_zoom_in(self):
         """Zoom in."""
@@ -1086,10 +1327,49 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             self.presenter.set_image_resolutions(src_res, dst_res)
         self.show_progress(False)
 
+    def _confirm_point_quality(self, transform_type) -> bool:
+        """Check the control points, and let the user decide about warnings.
+
+        Estimation over bad points either raises out of numpy several seconds
+        later or returns a mangled image, neither of which says what to fix.
+        Checking first means the problem is described while the points are
+        still on screen.
+
+        Returns
+        -------
+        bool
+            True to go ahead. False when the points cannot work, or when the
+            user chose not to continue past a warning.
+        """
+        issues = self.presenter.check_points(transform_type)
+        if not issues:
+            return True
+
+        errors = [issue for issue in issues if issue.is_error]
+        if errors:
+            messagebox.showerror(
+                "Control points cannot be used",
+                "The transform cannot be estimated:\n\n"
+                + validation.format_issues(errors),
+            )
+            self.set_status("Transform not estimated: check the control points")
+            return False
+
+        return bool(
+            messagebox.askokcancel(
+                "Check the control points",
+                validation.format_issues(issues) + "\n\nEstimate the transform anyway?",
+                icon=messagebox.WARNING,
+            )
+        )
+
     def _on_apply(self, is_3d=False):
         """Apply transformation to current slice."""
         self.show_progress(True)
         transform_type = self._get_transform_type_dialog()
+        if transform_type and not self._confirm_point_quality(transform_type):
+            self.show_progress(False)
+            return
         if transform_type:
             crop_mode = self._get_crop_mode_dialog()
             if crop_mode is not None:
@@ -1136,7 +1416,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         current_path = self.presenter.get_checkpoint_path()
         initial_dir = Path(current_path).parent if current_path else None
 
-        file_path = filedialog.askopenfilename(
+        file_path = self._ask_open(
             title="Select MatchAnything Checkpoint",
             initialdir=initial_dir,
             filetypes=[
@@ -1218,6 +1498,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
     def on_points_changed(self):
         """Called when control points have changed."""
         self._update_point_count()
+        self._refresh_edit_menu()
         self.update_display()
 
     def on_display_update_needed(self):
@@ -1292,6 +1573,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.zoom_dst_var.set("100%")
         self.show_points = True
         self.awaiting_corresponding_point = None
+        self._drag = None
+        self._refresh_edit_menu()
 
         # Reset slice control
         self.slice_var.set(0)
@@ -1473,6 +1756,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
     def _get_image_resolutions_dialog(self) -> tuple:
         """Show dialog to select transformation type."""
         dialog = tk.Toplevel(self)
+        apply_to_window(dialog, self.palette)
         dialog.title("Enter Resolution (µm)")
         dialog.geometry("250x100")
         dialog.transient(self)
@@ -1523,7 +1807,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.transient(self)
         dialog.grab_set()
         # Set background to match main window
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         selected = tk.StringVar(value="TPS")
 
@@ -1565,7 +1849,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.transient(self)
         dialog.grab_set()
         # Set background to match main window
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         selected = tk.StringVar(value="none")
 
@@ -1616,7 +1900,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.transient(self)
         dialog.grab_set()
         # Set background to match main window
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         selected_format = tk.StringVar(value=DataFormat.IMAGE.value)
 
@@ -1658,7 +1942,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.geometry("350x150")
         dialog.transient(self)
         dialog.grab_set()
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         # Main frame
         main_frame = ttk.Frame(dialog, padding="10")
@@ -1712,7 +1996,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.geometry("300x180")
         dialog.transient(self)
         dialog.grab_set()
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         # Main frame
         main_frame = ttk.Frame(dialog, padding="10")
@@ -1770,7 +2054,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.title(f"Auto Detection Parameters ({method.upper()})")
         dialog.transient(self)
         dialog.grab_set()
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         # Main frame
         main_frame = ttk.Frame(dialog, padding="10")
@@ -1841,7 +2125,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             entries[key] = var
 
             # Tooltip label
-            tip_lbl = ttk.Label(row_frame, text=tooltip, foreground="gray")
+            tip_lbl = ttk.Label(
+                row_frame, text=tooltip, foreground=self.palette.muted_foreground
+            )
             tip_lbl.pack(side="left", padx=(10, 0))
 
         # RANSAC filter checkbox (for matchanything only)
@@ -1934,6 +2220,9 @@ class MatchedPointsViewer:
             Window title
         """
         self.master = master
+        # Popups are separate Toplevels: ttk styling reaches ttk widgets
+        # but not the window itself or plain Tk widgets like the canvas.
+        self.palette = palette_of(master)
         self.src_img = self._normalize_image(src_img)
         self.dst_img = self._normalize_image(dst_img)
         self.src_points = src_points
@@ -1983,6 +2272,7 @@ class MatchedPointsViewer:
         """Setup the tkinter GUI"""
         # Create main window
         self.root = tk.Toplevel(self.master)
+        apply_to_window(self.root, self.palette)
         self.root.title(self.title)
         width, height = self._get_window_size()
         self.root.geometry(f"{width}x{height}")
@@ -1998,7 +2288,7 @@ class MatchedPointsViewer:
         main_frame.rowconfigure(0, weight=1)
 
         # Create canvas for display
-        self.canvas = tk.Canvas(main_frame, bg="gray")
+        self.canvas = tk.Canvas(main_frame, bg=self.palette.canvas)
         self.canvas.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         # Info frame
@@ -2166,6 +2456,9 @@ class Interactive3DViewer:
         stack0, stack1 = self._prepare_stacks(stack0, stack1)
 
         self.master = master
+        # Popups are separate Toplevels: ttk styling reaches ttk widgets
+        # but not the window itself or plain Tk widgets like the canvas.
+        self.palette = palette_of(master)
         self.stack0 = stack0
         self.stack1 = stack1
         self.title = title
@@ -2278,6 +2571,7 @@ class Interactive3DViewer:
         """Setup the tkinter GUI"""
         # Create main window
         self.root = tk.Toplevel(self.master)
+        apply_to_window(self.root, self.palette)
         self.root.title(self.title)
         width, height = self._get_window_size()
         self.root.geometry(f"{width}x{height}")
@@ -2293,7 +2587,7 @@ class Interactive3DViewer:
         main_frame.rowconfigure(0, weight=1)
 
         # Create canvas for image display
-        self.canvas = tk.Canvas(main_frame, bg="gray")
+        self.canvas = tk.Canvas(main_frame, bg=self.palette.canvas)
         self.canvas.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         # Left controls (row split slider)
@@ -2510,6 +2804,9 @@ class Interactive2DViewer:
             Window title
         """
         self.master = master
+        # Popups are separate Toplevels: ttk styling reaches ttk widgets
+        # but not the window itself or plain Tk widgets like the canvas.
+        self.palette = palette_of(master)
         self.im0_original = self._normalize_image(im0)
         self.im1_original = self._normalize_image(im1)
         self.title = title
@@ -2566,9 +2863,15 @@ class Interactive2DViewer:
         """Setup the tkinter GUI"""
         # Create main window
         self.root = tk.Toplevel(self.master)
+        apply_to_window(self.root, self.palette)
         self.root.title(self.title)
         width, height = self._get_window_size()
         self.root.geometry(f"{width}x{height}")
+
+        # Tk variables need a window to own them, so they are created here
+        # rather than in __init__.
+        self.blend_mode_var = tk.StringVar(value=overlays.BLEND_MODES[0])
+        self.tile_size_var = tk.IntVar(value=overlays.DEFAULT_TILE_SIZE)
 
         # Create main frame
         main_frame = ttk.Frame(self.root, padding="10")
@@ -2581,7 +2884,7 @@ class Interactive2DViewer:
         main_frame.rowconfigure(0, weight=1)
 
         # Create canvas for image display
-        self.canvas = tk.Canvas(main_frame, bg="gray")
+        self.canvas = tk.Canvas(main_frame, bg=self.palette.canvas)
         self.canvas.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         # Create vertical slider (Y position)
@@ -2632,12 +2935,38 @@ class Interactive2DViewer:
         info_label = ttk.Label(info_frame, text=info_text)
         info_label.pack(side=tk.LEFT, padx=5)
 
+        # Comparison mode. A wipe answers "is this edge in the right place?";
+        # the checkerboard and difference answer "is the whole thing aligned?"
+        ttk.Label(info_frame, text="Mode:").pack(side=tk.LEFT, padx=(20, 5))
+        self.mode_combo = ttk.Combobox(
+            info_frame,
+            textvariable=self.blend_mode_var,
+            values=list(overlays.BLEND_MODES),
+            state="readonly",
+            width=12,
+        )
+        self.mode_combo.pack(side=tk.LEFT, padx=5)
+        self.mode_combo.bind("<<ComboboxSelected>>", self._on_blend_mode_changed)
+
+        ttk.Label(info_frame, text="Tile:").pack(side=tk.LEFT, padx=(10, 5))
+        self.tile_spinbox = ttk.Spinbox(
+            info_frame,
+            from_=4,
+            to=256,
+            increment=4,
+            textvariable=self.tile_size_var,
+            width=5,
+            command=self.update_display,
+        )
+        self.tile_spinbox.pack(side=tk.LEFT, padx=5)
+
         # Add reset button
         reset_button = ttk.Button(info_frame, text="Reset", command=self.reset_sliders)
         reset_button.pack(side=tk.RIGHT, padx=5)
 
-        # Initial image display
-        self.update_display()
+        # Leaves the mode-specific controls in the right state for the
+        # starting mode, and draws the first frame.
+        self._on_blend_mode_changed()
 
         # Bind canvas resize event
         self.canvas.bind("<Configure>", self.on_canvas_resize)
@@ -2683,25 +3012,32 @@ class Interactive2DViewer:
         self.update_display()
 
     def blend_images(self):
-        """Blend the two images based on current alpha mask"""
-        # Create RGBA versions of both images
-        im0_rgba = np.zeros((self.max_r, self.max_c, 4), dtype=np.uint8)
-        im0_rgba[:, :, :3] = self.im0_original
-        im0_rgba[:, :, 3] = (self.alphas * 255).astype(np.uint8)
+        """Combine the two images using the selected comparison mode."""
+        combined = overlays.composite(
+            self.blend_mode_var.get(),
+            self.im0_original,
+            self.im1_original,
+            alphas=self.alphas,
+            tile_size=self.tile_size_var.get(),
+        )
+        return Image.fromarray(combined, "RGB")
 
-        im1_rgb = self.im1_original.copy()
+    def _on_blend_mode_changed(self, event=None):
+        """Show or hide the controls that only apply to one mode."""
+        mode = self.blend_mode_var.get()
 
-        # Create PIL images
-        overlay = Image.fromarray(im0_rgba, "RGBA")
-        background = Image.fromarray(im1_rgb, "RGB")
+        # The wipe sliders position a boundary that only the wipe draws, and
+        # the tile size only means anything to the checkerboard. Leaving both
+        # live in every mode invites fiddling with a control that does nothing.
+        wipe_state = "normal" if mode == "wipe" else "disabled"
+        self.y_slider.state(["!disabled"] if mode == "wipe" else ["disabled"])
+        self.x_slider.state(["!disabled"] if mode == "wipe" else ["disabled"])
+        self.tile_spinbox.config(
+            state="normal" if mode == "checkerboard" else "disabled"
+        )
+        logger.debug("Preview mode %s (wipe sliders %s)", mode, wipe_state)
 
-        # Convert background to RGBA
-        background = background.convert("RGBA")
-
-        # Composite images
-        blended = Image.alpha_composite(background, overlay)
-
-        return blended
+        self.update_display()
 
     def update_display(self):
         """Update the displayed image"""

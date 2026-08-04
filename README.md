@@ -120,14 +120,23 @@ example. See [demo_data/README.md](demo_data/README.md) for details.
 3. **Save the project.** File → *Save project...* writes all data, points and
    settings to a single JSON file.
 4. **Place control points.** Left-click to add, right-click near a point to
-   remove. Click the source first, then its partner in the destination.
+   remove, and drag a point to adjust it. Click the source first, then its
+   partner in the destination.
 5. **Preview.** View → *View corrected image*. Adjust points and repeat until
    satisfied.
 6. **Export.** File → *Export corrected data...*.
 
 Aim for 10–20 points spread evenly across the field of view; more distortion
-needs more points. CLAHE and zoom make features easier to match precisely, and
-"Match resolutions" renders both images at the same feature scale.
+needs more points. CLAHE and zoom make features easier to match precisely,
+"Match resolutions" renders both images at the same feature scale, and
+"Link views" keeps the two panels at the same zoom and scroll position.
+
+Before estimating a transform, the control points are checked and anything
+that will make the fit fail — too few points, points on top of each other,
+points all on one line — is reported with the problem named, rather than
+surfacing as a solver error a few seconds later. Points that will merely give
+a poor result, such as a cluster in one corner of the image, produce a warning
+you can dismiss.
 
 ---
 
@@ -136,9 +145,14 @@ needs more points. CLAHE and zoom make features easier to match precisely, and
 ### Main window
 
 The left and right panels show the source and destination images. The top bar
-controls the slice (for 3D data), the displayed modality, CLAHE, zoom, and
-resolution matching. The bottom bar shows status and a progress bar during long
-operations.
+controls the slice (for 3D data), the displayed modality, CLAHE, zoom, view
+linking, and resolution matching. The bottom bar shows status and a progress bar
+during long operations.
+
+Left-click places a control point. Right-clicking near one removes the pair.
+Dragging a point moves it, which is the quick way to correct a click that
+landed slightly off; the whole drag is a single undo step. **Link views** ties
+the two panels together so zooming or scrolling one does the same to the other.
 
 ### File menu
 
@@ -152,8 +166,9 @@ control points.
 ![Edit menu](./docs/images/GUI-edit-menubar.jpg)
 
 Undo and redo, clear points, and set the pixel size of each image. Each click is
-one undoable step. If the resolution is not set, both images are assumed to have
-the same pixel size.
+one undoable step, as is each drag. Undo and redo are greyed out when there is
+nothing to undo or redo. If the resolution is not set, both images are assumed
+to have the same pixel size.
 
 ### View menu
 
@@ -162,7 +177,14 @@ the same pixel size.
 Toggle point visibility and open the preview windows.
 
 *View corrected image* overlays the warped source on the destination, with
-sliders for the blend and — in 3D — for the slice and slicing axis.
+sliders for the blend and — in 3D — for the slice and slicing axis. The 2D
+preview offers three ways to compare:
+
+| Mode | Shows |
+| --- | --- |
+| `wipe` | Drag the sliders to sweep one image over the other. Best for checking a single edge. |
+| `checkerboard` | Alternating squares from each image. Misalignment shows as features stepping sideways at every tile boundary. |
+| `difference` | Absolute difference. A good alignment is black; whatever still glows did not line up. |
 
 ![Correction preview](./docs/images/GUI-preview.jpg)
 

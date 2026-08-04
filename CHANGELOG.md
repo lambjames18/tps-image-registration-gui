@@ -4,6 +4,58 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Drag a control point to adjust it. Correcting a click that landed slightly
+  off previously meant deleting the pair and re-placing both halves. The whole
+  drag is one undo step, and only the marker being dragged moves.
+- Control points are checked before a transform is estimated. Problems that
+  make the fit impossible — too few points, coincident points, points all on
+  one line, a half-finished pair — are reported by name and block estimation;
+  problems that only degrade the result, such as points clustered in one part
+  of the image, warn and can be dismissed. New `tpsreg.validation` module,
+  with tests pinning what it calls an error to what the solver actually
+  refuses.
+- "Link views" checkbox: zooming or scrolling either panel does the same to
+  the other, so a feature stays in the same place in both.
+- Checkerboard and difference comparison modes in the 2D preview, alongside the
+  existing wipe. New `tpsreg.overlays` module holds the compositing, so it can
+  be tested without a display.
+- File dialogs remember the folder the last one used, instead of starting from
+  the working directory every time.
+- `PointManager.move_point`, `PointSet.move_point`, `PointManager.can_undo`,
+  `PointManager.can_redo`, and the presenter methods that wrap them
+  (`move_point`, `commit_point_move`, `find_point_near`, `check_points`,
+  `can_undo`, `can_redo`).
+
+### Fixed
+
+- Collinear control points produced a garbage transform instead of an error on
+  Linux and Windows. The solver relied on `np.linalg.solve` raising
+  `LinAlgError` for a singular system, and whether it does depends on the
+  LAPACK build: macOS Accelerate raised, the OpenBLAS builds on the CI runners
+  returned a nonsense result for the identical points. `estimate` now tests the
+  control point geometry directly — costing microseconds, and giving the same
+  answer everywhere — and verifies the solution by substituting it back, so an
+  inaccurate solve is caught whatever the cause.
+- Clicks were recorded up to one image pixel away from where they were aimed
+  when zoomed past 100%. The canvas-to-image conversion divided the event
+  position and the canvas origin separately and truncated each, so the last
+  screen pixel of every image cell reported the next cell along. The cursor
+  readout shared the bug and now uses the same conversion as the click, so the
+  two can no longer disagree.
+
+### Changed
+
+- Undo and Redo are greyed out when there is nothing to undo or redo, rather
+  than being permanently enabled and silently doing nothing.
+- Control points are placed on mouse release rather than press, so that a press
+  landing on an existing marker can start a drag instead. A press that grabs a
+  marker and releases without moving leaves it alone, so a slightly misjudged
+  click near a point no longer stacks a second one on top of it.
+
 ## [0.2.0] - 2026-08-03
 
 The project is now an installable Python package with a test suite and CI.
