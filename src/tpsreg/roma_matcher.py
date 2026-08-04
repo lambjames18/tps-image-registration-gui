@@ -194,6 +194,62 @@ def get_config(checkpoint_path: str | Path | None = None) -> tuple[Any, dict]:
     return config, settings
 
 
+def _looks_like_module(value: Any) -> bool:
+    """True for something that behaves like an ``nn.Module``.
+
+    Duck-typed rather than isinstance-checked so this stays importable, and
+    testable, without torch.
+    """
+    return (
+        hasattr(value, "float")
+        and hasattr(value, "state_dict")
+        and callable(getattr(value, "float", None))
+    )
+
+
+def force_float32(model: Any) -> Any:
+    """Put every part of the matcher in float32.
+
+    ROMA reaches float16 by two different routes that only agree on CUDA:
+
+    * Most of it wraps work in ``torch.autocast("cuda", enabled=self.amp)``.
+      Off CUDA that context is inert, so those tensors stay float32.
+    * ``CNNandDinov2`` instead casts the DINOv2 backbone weights outright,
+      ``dinov2_vitl14.to(torch.float16)``, and casts its input to match. That
+      happens on every device.
+
+    On CPU or MPS the result is a feature pyramid whose CNN scales are float32
+    and whose DINOv2 scale is float16, and the decoder then fails on the
+    mismatch. Forcing float32 makes the two routes agree again.
+
+    ``amp`` is hardcoded to True inside ``roma_models.roma_model`` for the
+    encoder and decoder, so the ``ROMA.MODEL.AMP`` config knob cannot switch
+    this off; it has to be undone on the built model.
+
+    Note that the DINOv2 backbone is deliberately hidden from PyTorch in a
+    plain list (``self.dinov2_vitl14 = [dinov2_vitl14]``, "ugly hack to not
+    show parameters to DDP"), so it is not a registered submodule and neither
+    ``model.float()`` nor ``model.modules()`` reaches it. List-held modules are
+    therefore cast explicitly.
+    """
+    for module in model.modules():
+        # Stop the explicit input casts in CNNandDinov2.forward and friends.
+        if getattr(module, "amp", False):
+            module.amp = False
+
+        # Cast modules parked in plain attributes, which model.float() misses.
+        for name, value in list(vars(module).items()):
+            if isinstance(value, list) and any(_looks_like_module(v) for v in value):
+                setattr(
+                    module,
+                    name,
+                    [v.float() if _looks_like_module(v) else v for v in value],
+                )
+
+    # Registered parameters and buffers.
+    return model.float()
+
+
 def create_matcher(
     checkpoint_path: str | Path | None = None,
     device: str | None = None,
@@ -238,6 +294,18 @@ def create_matcher(
 
     matcher = PL_LoFTR(config, pretrained_ckpt=str(ckpt), test_mode=True).matcher
     matcher = matcher.eval().to(resolved_device)
+
+    # The model's mixed-precision strategy only holds together on CUDA; see
+    # force_float32. Slower off CUDA, but it produces correct matches instead
+    # of a dtype error.
+    if resolved_device != "cuda":
+        logger.info(
+            "Running MatchAnything in float32 on %s: its float16 path depends "
+            "on CUDA autocast. Expect this to be slow.",
+            resolved_device,
+        )
+        matcher = force_float32(matcher)
+
     # Remember the device so apply_matcher does not have to redetect it.
     matcher._tpsreg_device = resolved_device
     return matcher

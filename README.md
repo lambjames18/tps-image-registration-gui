@@ -74,8 +74,14 @@ placing control points, CLAHE, previewing, and every export path.
 To use MatchAnything you also need the model weights, which are
 [downloaded separately](https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view)
 and pointed at from **Auto → Set MatchAnything checkpoint...**. The model runs on
-CUDA, Apple Silicon (MPS) or CPU, selected automatically; CPU inference works but
-is slow. The first run downloads additional internal weights.
+CUDA, Apple Silicon (MPS) or CPU, selected automatically. The first run downloads
+additional internal weights.
+
+Only CUDA gets the model's half-precision fast path: it depends on CUDA
+autocast, and parts of the model stay in full precision without it. On MPS and
+CPU the model therefore runs entirely in float32, which is correct but
+appreciably slower and uses more memory. A machine with an NVIDIA GPU is worth
+using if you have one.
 
 ### Development install
 
