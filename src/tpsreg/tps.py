@@ -245,9 +245,6 @@ class ThinPlateSplineTransform:
 
     Parameters
     ----------
-    affine_only:
-        Fit only the affine part of the spline, discarding the bending energy
-        term. Useful when the expected distortion is a pure affine.
     chunk_size:
         Number of coordinates to evaluate per chunk. Defaults to a value
         derived from ``available_memory_gb``.
@@ -270,7 +267,6 @@ class ThinPlateSplineTransform:
 
     def __init__(
         self,
-        affine_only: bool = False,
         regularization: float | str = 0.0,
         chunk_size: int | None = None,
         dtype: type = np.float32,
@@ -279,7 +275,6 @@ class ThinPlateSplineTransform:
         self.control_points: np.ndarray | None = None
         self.coefficients: np.ndarray | None = None
         self.size: tuple[int, int] | None = None
-        self.affine_only = affine_only
         self.regularization = regularization
         #: Strength actually used, after resolving "auto". None until fitted.
         self.effective_regularization: float | None = None
@@ -371,7 +366,7 @@ class ThinPlateSplineTransform:
         # a1 + ax*x + ay*y, for both output components at once.
         mapped = affine[0] + coords[:, 0:1] * affine[1] + coords[:, 1:2] * affine[2]
 
-        if self.affine_only or len(coords) == 0:
+        if len(coords) == 0:
             return mapped
 
         weights = self.weights

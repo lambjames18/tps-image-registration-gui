@@ -964,6 +964,209 @@ class TestSmoothingSelector:
         assert app.smoothing_var.get() == gui_module.SMOOTHING_OFF
 
 
+class TestProgressIndicator:
+    """The busy indicator, which used to sit frozen."""
+
+    def test_it_animates_during_work(self, app):
+        """The bug: the bar never moved.
+
+        Its animation is a timer callback, and the app pumped only idle tasks,
+        which never run timers. Measured before the fix, the value did not
+        change at all across 600 ms of work.
+        """
+        import time
+
+        app.show_progress(True)
+        try:
+            before = float(app.progress_bar["value"])
+            deadline = time.time() + 0.3
+            while time.time() < deadline:
+                app.set_status("working")
+            assert float(app.progress_bar["value"]) != before
+        finally:
+            app.show_progress(False)
+
+    def test_an_inner_operation_does_not_stop_an_outer_one(self, app):
+        """Applying a transform redraws, and the redraw used to stop the bar."""
+        app.show_progress(True)
+        app.show_progress(True)
+        app.show_progress(False)
+        assert app._progress_depth > 0, "the outer operation is still running"
+
+        app.show_progress(False)
+        assert app._progress_depth == 0
+
+    def test_stray_stops_do_not_go_negative(self, app):
+        """A negative depth would swallow the next real start."""
+        for _ in range(5):
+            app.show_progress(False)
+        assert app._progress_depth == 0
+
+        app.show_progress(True)
+        assert app._progress_depth == 1
+        app.show_progress(False)
+
+    def test_it_never_dispatches_input_events(self, app):
+        """Only idle tasks, so a redraw cannot feed itself more events.
+
+        The first attempt at this fix called update(), which dispatches
+        <Configure> as well; redrawing sets a canvas scrollregion, which can
+        generate another <Configure>. Stepping the bar by hand and flushing
+        with update_idletasks has no such path.
+        """
+        import inspect
+
+        import tpsreg.GUI as gui_module
+
+        source = inspect.getsource(
+            gui_module.ModernDistortionCorrectionView._tick_progress
+        )
+        assert "update_idletasks" in source
+        assert "self.update()" not in source
+
+    def test_a_visible_step_size(self):
+        import tpsreg.GUI as gui_module
+
+        assert 1 <= gui_module.PROGRESS_STEP <= 25
+
+
+class TestLiveResiduals:
+    """Per-point fit quality, updated while placing points."""
+
+    @staticmethod
+    def _grid(n=4, extent=40.0):
+        axis = np.linspace(4.0, extent, n)
+        return np.stack(np.meshgrid(axis, axis), -1).reshape(-1, 2)
+
+    def _place(self, app, src, dst):
+        for (sx, sy), (dx, dy) in zip(src, dst, strict=True):
+            app.presenter.add_point("source", int(sx), int(sy))
+            app.presenter.add_point("destination", int(dx), int(dy))
+
+    def test_nothing_is_shown_before_there_are_enough_points(self, with_images):
+        """Below the threshold every residual is huge and meaningless.
+
+        Showing those numbers while someone places their first few points
+        would be alarming and wrong.
+        """
+        grid = self._grid()
+        self._place(with_images, grid[:4], grid[:4])
+
+        assert with_images.point_residuals is None
+        assert with_images.residual_label.cget("text") == "Fit: --"
+
+    def test_residuals_appear_once_there_are_enough(self, with_images):
+        grid = self._grid()
+        self._place(with_images, grid, grid)
+
+        assert with_images.point_residuals is not None
+        assert len(with_images.point_residuals) == len(grid)
+        assert "median" in with_images.residual_label.cget("text")
+
+    def test_they_update_when_a_point_is_added(self, with_images):
+        grid = self._grid()
+        self._place(with_images, grid, grid)
+        before = len(with_images.point_residuals)
+
+        with_images.presenter.add_point("source", 45, 45)
+        with_images.presenter.add_point("destination", 45, 45)
+
+        assert len(with_images.point_residuals) == before + 1
+
+    def test_they_update_when_a_point_is_removed(self, with_images):
+        grid = self._grid()
+        self._place(with_images, grid, grid)
+        before = len(with_images.point_residuals)
+
+        with_images.presenter.remove_point(0)
+        assert len(with_images.point_residuals) == before - 1
+
+    def test_a_misplaced_point_shows_up_live(self, with_images):
+        grid = self._grid()
+        self._place(with_images, grid, grid)
+        assert float(np.max(with_images.point_residuals)) < 1e-6
+
+        with_images.presenter.move_point("source", 5, 38, 8)
+
+        residuals = with_images.point_residuals
+        assert int(np.argmax(residuals)) == 5
+        assert residuals[5] > 1.0
+
+    def test_they_are_not_recomputed_mid_drag(self, with_images):
+        """A half-finished move produces noise, so the drag suppresses it."""
+        grid = self._grid()
+        self._place(with_images, grid, grid)
+        before = with_images.point_residuals.copy()
+
+        press = at_image(with_images, "source", int(grid[5][0]), int(grid[5][1]))
+        with_images._on_canvas_press(press, "source")
+        with_images._on_canvas_drag(at_image(with_images, "source", 38, 8), "source")
+
+        np.testing.assert_array_equal(with_images.point_residuals, before)
+
+    def test_they_are_recomputed_when_the_drag_lands(self, with_images):
+        grid = self._grid()
+        self._place(with_images, grid, grid)
+
+        press = at_image(with_images, "source", int(grid[5][0]), int(grid[5][1]))
+        target = at_image(with_images, "source", 38, 8)
+        with_images._on_canvas_press(press, "source")
+        with_images._on_canvas_drag(target, "source")
+        with_images._on_canvas_release(target, "source")
+
+        assert int(np.argmax(with_images.point_residuals)) == 5
+
+    def test_a_new_project_clears_them(self, with_images):
+        grid = self._grid()
+        self._place(with_images, grid, grid)
+        assert with_images.point_residuals is not None
+
+        with_images.presenter.new_project()
+        assert with_images.point_residuals is None
+        assert with_images.residual_label.cget("text") == "Fit: --"
+
+    def test_the_residual_is_drawn_next_to_the_marker(self, with_images):
+        """Seeing the error for every point, not just the worst one."""
+        grid = self._grid()
+        self._place(with_images, grid, grid)
+        with_images.update_display()
+
+        labels = [
+            with_images.left_canvas.itemcget(item, "text")
+            for item in with_images.left_canvas.find_withtag("point_3")
+            if with_images.left_canvas.type(item) == "text"
+        ]
+        assert labels
+        assert all(":" in text for text in labels), labels
+
+    def test_markers_are_coloured_by_residual(self, with_images):
+        """A gradient says how bad, where a flag only says which."""
+        good = with_images._residual_colour(0.0)
+        middling = with_images._residual_colour(5.0)
+        bad = with_images._residual_colour(50.0)
+
+        assert good == with_images.palette.success
+        assert bad == with_images.palette.warning
+        assert middling not in (good, bad)
+
+    def test_an_unknown_residual_is_drawn_muted(self, with_images):
+        assert with_images._residual_colour(float("nan")) == (
+            with_images.palette.muted_foreground
+        )
+
+    def test_the_marker_colour_reaches_the_canvas(self, with_images):
+        grid = self._grid()
+        self._place(with_images, grid, grid)
+        with_images.update_display()
+
+        outlines = {
+            with_images.left_canvas.itemcget(item, "outline")
+            for item in with_images.left_canvas.find_withtag("point_2")
+            if with_images.left_canvas.type(item) == "oval"
+        }
+        assert with_images.palette.success in outlines
+
+
 class TestLoadingThroughTheRealView:
     """Driving the real window with real files."""
 

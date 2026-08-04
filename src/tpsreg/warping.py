@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 #: Transform names handled by this module in addition to scikit-image's own
 #: ("euclidean", "similarity", "affine", "piecewise-affine", "projective",
 #: "polynomial").
-TPS_MODES = ("tps", "tps affine")
+TPS_MODES = ("tps",)
 
 #: Largest output tile edge, in pixels, used when warping.
 #: ``skimage.transform.warp`` builds one coordinate array for the whole output
@@ -209,7 +209,7 @@ def get_transform(src: np.ndarray, dst: np.ndarray, mode: str, *args, **kwargs) 
     src, dst:
         ``(N, 2)`` arrays of corresponding coordinates.
     mode:
-        ``"tps"``, ``"tps affine"``, or any mode accepted by
+        ``"tps"``, or any mode accepted by
         :func:`skimage.transform.estimate_transform`.
     *args, **kwargs:
         Forwarded to the underlying estimator. For the TPS modes the first
@@ -223,9 +223,6 @@ def get_transform(src: np.ndarray, dst: np.ndarray, mode: str, *args, **kwargs) 
 
     if mode_lower == "tps":
         tform = ThinPlateSplineTransform()
-        tform.estimate(src, dst, *args, **kwargs)
-    elif mode_lower == "tps affine":
-        tform = ThinPlateSplineTransform(affine_only=True)
         tform.estimate(src, dst, *args, **kwargs)
     else:
         tform = tf.estimate_transform(mode_lower, src, dst, *args, **kwargs)

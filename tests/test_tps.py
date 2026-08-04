@@ -131,25 +131,6 @@ class TestEstimation:
         query = np.array([[25, 25], [60, 40]], dtype=float)
         np.testing.assert_allclose(tform(query), query + shift, atol=1e-6)
 
-    def test_affine_only_ignores_bending(self, square_grid_points, rng):
-        """affine_only drops the non-linear term, so the two differ on a warp."""
-        dst = square_grid_points
-        src = square_grid_points + rng.normal(0, 3, square_grid_points.shape)
-
-        full = ThinPlateSplineTransform(affine_only=False)
-        full.estimate(src, dst, (100, 100))
-
-        affine = ThinPlateSplineTransform(affine_only=True)
-        affine.estimate(src, dst, (100, 100))
-
-        # affine_only is an evaluation flag, not a fitting one: the same
-        # system is solved either way, and the bending term is simply not
-        # applied. So the coefficients match and only the mapping differs.
-        np.testing.assert_allclose(full.params, affine.params)
-
-        query = np.array([[25.0, 25.0], [60.0, 40.0], [80.0, 70.0]])
-        assert not np.allclose(full(query), affine(query))
-
     def test_collinear_points_raise_clear_error(self):
         """A degenerate system should explain itself, not leak LinAlgError."""
         src = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [3.0, 0.0]])

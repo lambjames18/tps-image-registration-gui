@@ -82,10 +82,14 @@ class DataFormat(Enum):
 
 
 class TransformType(Enum):
-    """Enumeration of available transformation types."""
+    """Enumeration of available transformation types.
+
+    Only the thin-plate spline. An "affine only" variant used to sit here; it
+    dropped the bending term at evaluation time, which is a strictly worse
+    affine than fitting one directly, and it was never what anyone wanted.
+    """
 
     TPS = "tps"
-    TPS_AFFINE = "tps_affine"
 
 
 @dataclass
@@ -1581,10 +1585,7 @@ class TransformManager:
             # Import TPS here to avoid circular dependency
             from tpsreg.tps import ThinPlateSplineTransform
 
-            affine_only = transform_type == TransformType.TPS_AFFINE
-            tform = ThinPlateSplineTransform(
-                affine_only=affine_only, regularization=regularization
-            )
+            tform = ThinPlateSplineTransform(regularization=regularization)
             tform.estimate(
                 src_points,
                 dst_points,
@@ -1672,7 +1673,6 @@ class TransformManager:
                     upper_field = transforms[upper_idx].build_field(output_shape)
 
                     tform = ThinPlateSplineTransform()
-                    tform.affine_only = transform_type == TransformType.TPS_AFFINE
                     tform.set_field(
                         interpolate_fields(lower_field, upper_field, alpha),
                         size=output_shape,

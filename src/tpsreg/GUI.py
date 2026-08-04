@@ -30,6 +30,27 @@ SMOOTHING_OFF = "Off"
 SMOOTHING_AUTO = "Automatic"
 SMOOTHING_MANUAL = "Manual..."
 
+#: How far the busy indicator advances at each reported step.
+#:
+#: The bar is driven by hand rather than by Tk's timer. A timer-driven bar can
+#: only animate while the event loop runs, and during a synchronous operation
+#: it does not run at all -- which is why the bar never moved. Pumping the loop
+#: with ``update()`` would let the timer fire, but ``update()`` processes the
+#: whole event queue including ``<Configure>``, and redrawing sets a canvas
+#: scrollregion, which can generate another ``<Configure>``. Stepping the bar
+#: ourselves and flushing with ``update_idletasks`` has no such feedback path
+#: and behaves the same on every platform.
+PROGRESS_STEP = 4
+
+#: Residual, in pixels, at and below which a point is drawn as "good". Between
+#: this and RESIDUAL_BAD_PX the marker shades from good to bad. Chosen because
+#: sub-pixel is the stated accuracy target, so anything under a pixel is not
+#: worth drawing attention to.
+RESIDUAL_GOOD_PX = 1.0
+
+#: Residual at which a marker is drawn fully as "bad". Above this it saturates.
+RESIDUAL_BAD_PX = 10.0
+
 
 class ViewInterface(ABC):
     """Abstract base class for view implementations."""
@@ -107,6 +128,16 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         #: points change, because a report about a different point set is
         #: worse than no report.
         self.point_quality = None
+
+        #: Nesting depth of show_progress. See show_progress.
+        self._progress_depth = 0
+
+        #: Per-point leave-one-out residuals, refreshed on every point change.
+        #: None when there are too few points for them to mean anything.
+        self.point_residuals = None
+
+        #: Whether to draw the residual next to each marker.
+        self.show_residuals = True
 
         # Setup UI
         self._setup_window()
@@ -236,6 +267,11 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
         self.points_label = ttk.Label(left_info_frame, text="Points: 0 / 0", width=15)
         self.points_label.pack(side="left", padx=(0, 5))
+
+        # Live fit quality, updated on every point change. See
+        # _refresh_residuals.
+        self.residual_label = ttk.Label(left_info_frame, text="Fit: --", width=44)
+        self.residual_label.pack(side="left", padx=(0, 5))
 
         # Center section: Status message
         self.status_label = ttk.Label(self.status_frame, text="Ready", anchor="w")
@@ -883,9 +919,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
     def _on_export_transform(self):
         """Handle exporting transformation."""
         # Get transform type
-        transform_type = self._get_transform_type_dialog()
-        if not transform_type:
-            return
+        transform_type = TransformType.TPS
 
         # Warn before the file dialog, not after: there is no point choosing a
         # destination for a transform that will not estimate.
@@ -914,11 +948,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.set_status("Exporting corrected image")
         self.show_progress(True)
 
-        transform_type = self._get_transform_type_dialog()
-        if transform_type is None:
-            self.show_progress(False)
-            return
-
+        transform_type = TransformType.TPS
         if not self._confirm_point_quality(transform_type):
             self.show_progress(False)
             return
@@ -1083,6 +1113,10 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             if drag["index"] is not None and drag["recorded"]:
                 x, y = drag["position"]
                 self.presenter.commit_point_move()
+                # The drag suppressed recomputation while it was in progress;
+                # now the point has landed, the residuals are worth having.
+                self._refresh_residuals()
+                self.update_display()
                 self.set_status(f"Moved point {drag['index']} to ({x}, {y})")
             return
 
@@ -1441,8 +1475,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
     def _on_apply(self, is_3d=False):
         """Apply transformation to current slice."""
         self.show_progress(True)
-        transform_type = self._get_transform_type_dialog()
-        if transform_type and not self._confirm_point_quality(transform_type):
+        transform_type = TransformType.TPS
+        if not self._confirm_point_quality(transform_type):
             self.show_progress(False)
             return
         if transform_type:
@@ -1536,9 +1570,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             self.on_error("Both source and destination images must be loaded")
             return
 
-        transform_type = self._get_transform_type_dialog()
-        if transform_type is None:
-            return
+        transform_type = TransformType.TPS
         if not self._confirm_point_quality(transform_type):
             return
 
@@ -1657,6 +1689,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         # The assessment described the points as they were; it no longer
         # describes the points as they are.
         self.point_quality = None
+        self._refresh_residuals()
         self._update_point_count()
         self._refresh_edit_menu()
         self.update_display()
@@ -1735,6 +1768,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.awaiting_corresponding_point = None
         self._drag = None
         self.point_quality = None
+        self.point_residuals = None
+        self._update_residual_summary()
         self._sync_smoothing_selector()
         self._refresh_edit_menu()
 
@@ -1804,9 +1839,6 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         if self.show_points:
             self._draw_points()
 
-        # Ensure progress bar is stopped
-        self.show_progress(False)
-
     def _display_image(self, canvas, image):
         """Display image on canvas."""
         # This would need proper implementation to convert numpy array to PhotoImage
@@ -1826,6 +1858,61 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             ppm_header = f"P6 {width} {height} 255 ".encode()
             data = ppm_header + image.tobytes()
         return tk.PhotoImage(width=width, height=height, data=data, format="PPM")
+
+    def _refresh_residuals(self):
+        """Recompute the live per-point residuals.
+
+        Skipped while a marker is being dragged. A drag fires a change per
+        mouse motion, and the residuals of a half-finished move are noise; the
+        release recomputes once the point has landed.
+        """
+        if self._drag is not None and self._drag.get("moved"):
+            return
+
+        self.point_residuals = self.presenter.live_residuals()
+        self._update_residual_summary()
+
+    def _update_residual_summary(self):
+        """Put the live figures in the status bar."""
+        residuals = self.point_residuals
+        if residuals is None or len(residuals) == 0:
+            self.residual_label.config(text="Fit: --")
+            return
+
+        worst = int(np.argmax(residuals))
+        self.residual_label.config(
+            text=f"Fit: {np.median(residuals):.2f} px median, "
+            f"worst {residuals[worst]:.2f} px (point {worst})"
+        )
+
+    def _residual_colour(self, residual: float) -> str:
+        """Marker colour for a residual, shading from success to warning.
+
+        A single flag says which points are bad; a gradient says how bad, and
+        that is the thing worth seeing across a whole field of points at once.
+        """
+        if not np.isfinite(residual):
+            return self.palette.muted_foreground
+
+        span = max(RESIDUAL_BAD_PX - RESIDUAL_GOOD_PX, 1e-9)
+        fraction = np.clip((residual - RESIDUAL_GOOD_PX) / span, 0.0, 1.0)
+
+        def channels(colour):
+            return [int(colour[i : i + 2], 16) for i in (1, 3, 5)]
+
+        good = channels(self.palette.success)
+        bad = channels(self.palette.warning)
+        blended = [
+            round(g + (b - g) * fraction) for g, b in zip(good, bad, strict=True)
+        ]
+        return "#{:02x}{:02x}{:02x}".format(*blended)
+
+    def _residual_for(self, index: int) -> float | None:
+        """The residual of one point, if there is one."""
+        residuals = self.point_residuals
+        if residuals is None or index >= len(residuals):
+            return None
+        return float(residuals[index])
 
     def _is_flagged(self, index: int) -> bool:
         """True if the last quality check singled this point out."""
@@ -1854,82 +1941,120 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             # A flagged point gets a bigger, warning-coloured ring: a number in
             # a report is no use if you cannot find the point on the canvas.
             flagged = self._is_flagged(i)
+            residual = self._residual_for(i)
             radius = 7 if flagged else 4
+            if flagged:
+                outline = self.palette.warning
+            elif residual is not None:
+                outline = self._residual_colour(residual)
+            else:
+                outline = "red"
             self.left_canvas.create_oval(
                 x - radius,
                 y - radius,
                 x + radius,
                 y + radius,
                 fill="white",
-                outline=self.palette.warning if flagged else "red",
-                width=3 if flagged else 1,
+                outline=outline,
+                width=3 if flagged else 2,
                 tags=f"point_{i}",
             )
-            self.left_canvas.create_text(
-                x + 5,
-                y - 5,
-                text=str(i),
-                fill="red",
-                anchor="sw",
-                tags=f"point_{i}",
-                font=("Arial", 11, "bold"),
-            )
-            self.left_canvas.create_text(
-                x + 5,
-                y - 5,
-                text=str(i),
-                fill="white",
-                anchor="sw",
-                tags=f"point_{i}",
-                font=("Arial", 10),
-            )
+            self._label_point(self.left_canvas, i, x, y, "red")
 
         # Draw destination points
         for i, point in enumerate(dst_points):
             x, y = point[0] * dst_scale, point[1] * dst_scale
             flagged = self._is_flagged(i)
+            residual = self._residual_for(i)
             radius = 7 if flagged else 4
+            if flagged:
+                outline = self.palette.warning
+            elif residual is not None:
+                outline = self._residual_colour(residual)
+            else:
+                outline = "green"
             self.right_canvas.create_oval(
                 x - radius,
                 y - radius,
                 x + radius,
                 y + radius,
                 fill="white",
-                outline=self.palette.warning if flagged else "green",
-                width=3 if flagged else 1,
+                outline=outline,
+                width=3 if flagged else 2,
                 tags=f"point_{i}",
             )
-            self.right_canvas.create_text(
+            self._label_point(self.right_canvas, i, x, y, "green")
+
+    def _label_point(self, canvas, index, x, y, outline_colour):
+        """Draw a marker's index, and its residual when one is known.
+
+        Two passes of text, a bold dark one under a lighter one, so the label
+        stays readable over whatever the image happens to be underneath.
+        """
+        label = str(index)
+        residual = self._residual_for(index)
+        if residual is not None and self.show_residuals:
+            label = f"{index}: {residual:.1f}"
+
+        for colour, font in (
+            (outline_colour, ("Arial", 11, "bold")),
+            ("white", ("Arial", 10)),
+        ):
+            canvas.create_text(
                 x + 5,
                 y - 5,
-                text=str(i),
-                fill="green",
+                text=label,
+                fill=colour,
                 anchor="sw",
-                tags=f"point_{i}",
-                font=("Arial", 11, "bold"),
-            )
-            self.right_canvas.create_text(
-                x + 5,
-                y - 5,
-                text=str(i),
-                fill="white",
-                anchor="sw",
-                tags=f"point_{i}",
-                font=("Arial", 10),
+                tags=f"point_{index}",
+                font=font,
             )
 
     def set_status(self, message: str):
         """Update status bar."""
         self.status_label.config(text=message)
-        self.update_idletasks()
+        # A status change is usually the only point during a synchronous
+        # operation at which the indicator can advance, so it drives it.
+        self._tick_progress()
         logger.info(message)
 
     def show_progress(self, show: bool):
-        """Show or hide progress indicator."""
+        """Show or hide the busy indicator.
+
+        Nested, because operations nest: applying a transform redraws, and the
+        redraw used to call this with False and stop the bar while the outer
+        operation was still going. Only the outermost show/hide pair moves it.
+        """
         if show:
-            self.progress_bar.start(1)
+            self._progress_depth += 1
         else:
-            self.progress_bar.stop()
+            # Never go negative: some paths call this without a matching
+            # start, and a negative depth would swallow the next real one.
+            self._progress_depth = max(0, self._progress_depth - 1)
+
+        self._tick_progress()
+
+    def _tick_progress(self):
+        """Advance the busy indicator and flush the display.
+
+        Called wherever the application reaches a point worth reporting --
+        chiefly :meth:`set_status`. Advancing by hand means the bar moves
+        exactly when there is something to report, without depending on an
+        event loop that a synchronous operation never returns to.
+
+        ``update_idletasks`` rather than ``update``: the former repaints,
+        while the latter also dispatches input and window events, which can
+        re-enter a handler and, because redrawing sets a canvas scrollregion,
+        feed itself more ``<Configure>`` events.
+        """
+        try:
+            if self._progress_depth > 0:
+                self.progress_bar.step(PROGRESS_STEP)
+            else:
+                self.progress_bar["value"] = 0
+            self.update_idletasks()
+        except tk.TclError:  # pragma: no cover - window already torn down
+            logger.debug("Could not update the busy indicator", exc_info=True)
 
     def _get_image_resolutions_dialog(self) -> tuple:
         """Show dialog to select transformation type."""
@@ -1976,48 +2101,6 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
         dialog.wait_window()
         return result[0], result[1]
-
-    def _get_transform_type_dialog(self) -> TransformType | None:
-        """Show dialog to select transformation type."""
-        dialog = tk.Toplevel(self)
-        dialog.title("Select Transform Type")
-        dialog.geometry("300x130")
-        dialog.transient(self)
-        dialog.grab_set()
-        # Set background to match main window
-        apply_to_window(dialog, self.palette)
-
-        selected = tk.StringVar(value="TPS")
-
-        for transform_type in TransformType:
-            tk.Radiobutton(
-                dialog,
-                text=transform_type.value.replace("_", " ").title(),
-                variable=selected,
-                value=transform_type.value,
-                bg=self.bg,
-                fg=self.fg,
-                selectcolor=self.bg,
-            ).pack(anchor="w", padx=20, pady=5)
-
-        result = [None]
-
-        def on_ok():
-            result[0] = TransformType(selected.get())
-            dialog.destroy()
-
-        def on_cancel():
-            dialog.destroy()
-
-        button_frame = ttk.Frame(dialog)
-        button_frame.pack(side="bottom", pady=10)
-        ttk.Button(button_frame, text="OK", command=on_ok).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(
-            side="left", padx=5
-        )
-
-        dialog.wait_window()
-        return result[0]
 
     def _get_crop_mode_dialog(self) -> CropMode | None:
         """Show dialog to select crop mode."""

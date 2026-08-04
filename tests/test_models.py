@@ -709,12 +709,9 @@ class TestTransformManager:
         assert tform.params.shape == (len(points) + 3, 2)
         assert tform.size == (64, 64)
 
-    def test_affine_type_sets_affine_only(self, points):
-        manager = TransformManager()
-        tform = manager.estimate_transform(
-            points, points, TransformType.TPS_AFFINE, (64, 64)
-        )
-        assert tform.affine_only
+    def test_only_the_spline_is_offered(self, points):
+        """The affine-only variant is gone; TPS is the whole enum."""
+        assert list(TransformType) == [TransformType.TPS]
 
     def test_apply_transform_matches_output_shape(self, points, checkerboard):
         manager = TransformManager()
