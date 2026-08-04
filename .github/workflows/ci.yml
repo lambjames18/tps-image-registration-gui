@@ -70,11 +70,11 @@ jobs:
       # are lost with it. Splitting keeps the failure legible.
       - name: Run tests
         if: runner.os != 'Linux'
-        run: python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term
+        run: python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term --junitxml=junit.xml
 
       - name: Run tests (Linux, under Xvfb)
         if: runner.os == 'Linux'
-        run: xvfb-run -a python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term
+        run: xvfb-run -a python -m pytest tests/ -v -m "not gui" --cov=tpsreg --cov-report=xml --cov-report=term --junitxml=junit.xml
 
       - name: Run GUI tests
         if: runner.os != 'Linux'
@@ -86,6 +86,11 @@ jobs:
 
       # One reference run feeds the README badges. Ubuntu 3.12 is the job with
       # Tk installed, so its numbers are the most representative.
+      #
+      # if-no-files-found is 'error' on purpose. With 'warn', a lost
+      # --junitxml flag uploads a partial artifact and the failure only
+      # surfaces later, in a different job, as a confusing "file does not
+      # exist". Failing here points straight at the step that produced it.
       - name: Upload coverage and test reports
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
         uses: actions/upload-artifact@v7
@@ -94,7 +99,7 @@ jobs:
           path: |
             coverage.xml
             junit.xml
-          if-no-files-found: warn
+          if-no-files-found: error
 
   badges:
     name: Publish README badges
