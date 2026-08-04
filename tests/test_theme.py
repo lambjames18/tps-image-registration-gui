@@ -30,6 +30,7 @@ COLOUR_FIELDS = (
     "success",
     "canvas",
     "muted_foreground",
+    "warning",
 )
 
 
@@ -114,6 +115,16 @@ class TestPalettes:
         """A popup must not be able to recolour the shared palette."""
         with pytest.raises(dataclasses.FrozenInstanceError):
             DARK.background = "#ff0000"
+
+    @pytest.mark.parametrize("palette", [DARK, LIGHT])
+    def test_warning_is_distinguishable_from_success(self, palette):
+        """A flagged point must not read as a healthy one."""
+        assert palette.warning != palette.success
+
+    @pytest.mark.parametrize("palette", [DARK, LIGHT])
+    def test_warning_stands_out_against_the_canvas(self, palette):
+        """It is drawn on the image backdrop, not the window background."""
+        assert palette.warning != palette.canvas
 
     def test_registry_is_complete(self):
         assert set(PALETTES) == {"dark", "light"}

@@ -396,6 +396,70 @@ class TestUndoAvailability:
         assert loaded.can_redo() is True
 
 
+class TestAssessingTheTransform:
+    """The quality report the presenter assembles."""
+
+    @staticmethod
+    def _grid(extent=40.0, n=4):
+        axis = np.linspace(4.0, extent, n)
+        return np.stack(np.meshgrid(axis, axis), -1).reshape(-1, 2)
+
+    def _place(self, presenter, src, dst):
+        for (sx, sy), (dx, dy) in zip(src, dst, strict=True):
+            presenter.add_point("source", int(sx), int(sy))
+            presenter.add_point("destination", int(dx), int(dy))
+
+    def test_no_points_gives_no_report(self, loaded):
+        assert loaded.assess_transform(TransformType.TPS) is None
+
+    def test_a_clean_fit_reports_no_outliers(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+
+        quality = loaded.assess_transform(TransformType.TPS)
+        assert quality is not None
+        assert not quality.outliers.any()
+        assert not quality.has_folds
+
+    def test_a_misplaced_point_is_flagged(self, loaded):
+        grid = self._grid()
+        src = grid.copy()
+        src[6] = src[6] + np.array([18.0, -14.0])
+        self._place(loaded, src, grid)
+
+        quality = loaded.assess_transform(TransformType.TPS)
+        assert quality.outliers[6]
+        assert quality.worst_point == 6
+
+    def test_coverage_comes_from_the_loaded_image(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+
+        quality = loaded.assess_transform(TransformType.TPS)
+        assert quality.coverage is not None
+        assert 0 < quality.coverage <= 1
+
+    def test_the_expensive_part_can_be_skipped(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+
+        quality = loaded.assess_transform(
+            TransformType.TPS, include_leave_one_out=False
+        )
+        assert quality.leave_one_out.size == 0
+
+    def test_a_degenerate_fit_reports_the_error_rather_than_raising(
+        self, loaded, fake_view
+    ):
+        """Collinear points cannot be fitted; the view should hear about it."""
+        for i in range(5):
+            loaded.add_point("source", 5 + i * 5, 5 + i * 5)
+            loaded.add_point("destination", 5 + i * 5, 5 + i * 5)
+
+        assert loaded.assess_transform(TransformType.TPS) is None
+        assert fake_view.errors
+
+
 class TestDisplayState:
     """View mode, slice and resolution settings."""
 

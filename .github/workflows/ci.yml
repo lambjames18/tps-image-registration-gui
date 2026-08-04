@@ -198,6 +198,7 @@ jobs:
 
           for module in [
               "tpsreg",
+              "tpsreg.metrics",
               "tpsreg.models",
               "tpsreg.overlays",
               "tpsreg.presenter",

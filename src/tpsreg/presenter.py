@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from tpsreg import validation
+from tpsreg import metrics, validation
 from tpsreg.models import (
     DataFormat,
     ImageData,
@@ -716,15 +716,9 @@ class ApplicationPresenter:
         """
         src_points, dst_points = self.get_points()
 
-        image_shape = None
-        if self.source_image is not None:
-            try:
-                image_shape = self.source_image.get_slice(
-                    self.current_source_mode, self.current_slice
-                ).shape
-            except (KeyError, IndexError):
-                # Coverage is the only check that needs this; the rest still run.
-                logger.debug("Could not determine source shape for point checks")
+        # Coverage is the only check that needs a shape; the rest still run
+        # without one.
+        image_shape = self._source_shape()
 
         return validation.check_control_points(
             src_points,
@@ -732,6 +726,63 @@ class ApplicationPresenter:
             transform_type=transform_type or TransformType.TPS,
             image_shape=image_shape,
         )
+
+    def _source_shape(self) -> tuple[int, ...] | None:
+        """Shape of the current source slice, or None if unavailable."""
+        if self.source_image is None:
+            return None
+        try:
+            return self.source_image.get_slice(
+                self.current_source_mode, self.current_slice
+            ).shape
+        except (KeyError, IndexError):
+            logger.debug("Could not determine the source image shape")
+            return None
+
+    def assess_transform(
+        self, transform_type: Any = None, include_leave_one_out: bool = True
+    ) -> metrics.TransformQuality | None:
+        """Fit a transform and report how good it looks.
+
+        Returns
+        -------
+        TransformQuality | None
+            None when there are no usable points, or the fit fails. The
+            failure is reported to the view, as with any other estimation.
+        """
+        try:
+            src_points, dst_points = self.get_points()
+            if src_points.size == 0 or src_points.shape != dst_points.shape:
+                return None
+
+            if self.match_resolutions:
+                src_res, dst_res = self.get_resolutions()
+                dst_points = dst_points * (dst_res / src_res)
+
+            image_shape = self._source_shape()
+            output_shape = image_shape[:2] if image_shape else None
+
+            tform = self.transform_manager.estimate_transform(
+                src_points,
+                dst_points,
+                transform_type or TransformType.TPS,
+                output_shape,
+            )
+
+            return metrics.assess(
+                tform,
+                src_points,
+                dst_points,
+                image_shape=image_shape,
+                include_leave_one_out=include_leave_one_out,
+            )
+
+        except Exception as e:
+            logger.error("Failed to assess the transform: %s", e)
+            self._notify_view_error(
+                f"Failed to assess the transform: {e!s}, ({parse_error()})"
+            )
+            return None
 
     def clear_points(self, slice_only: bool = True) -> None:
         """Clear control points."""

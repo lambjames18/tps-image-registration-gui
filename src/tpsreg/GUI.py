@@ -97,6 +97,11 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         #: Directory the last file dialog used, so the next one starts there.
         self._last_directory: Path | None = None
 
+        #: Result of the last quality check, or None. Discarded whenever the
+        #: points change, because a report about a different point set is
+        #: worse than no report.
+        self.point_quality = None
+
         # Setup UI
         self._setup_window()
         self._setup_logging()
@@ -310,6 +315,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         view_menu.add_separator()
         view_menu.add_command(
             label="View matched points", command=self._on_view_matched_points
+        )
+        view_menu.add_command(
+            label="Check registration quality", command=self._on_check_quality
         )
         view_menu.add_separator()
         view_menu.add_command(
@@ -1450,6 +1458,88 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.set_status("Matched points visualization opened")
         self.show_progress(False)
 
+    def _on_check_quality(self):
+        """Fit a transform and report how good the correspondences look.
+
+        Separate from placing points because the useful measure is expensive:
+        it refits the spline once per control point. See
+        :func:`tpsreg.metrics.leave_one_out_residuals`.
+        """
+        if not self.presenter.source_image or not self.presenter.destination_image:
+            self.on_error("Both source and destination images must be loaded")
+            return
+
+        transform_type = self._get_transform_type_dialog()
+        if transform_type is None:
+            return
+        if not self._confirm_point_quality(transform_type):
+            return
+
+        self.show_progress(True)
+        self.set_status("Checking registration quality...")
+        quality = self.presenter.assess_transform(transform_type)
+        self.show_progress(False)
+
+        if quality is None:
+            self.set_status("Could not assess the transform")
+            return
+
+        # Colouring the markers is what makes a numbered outlier findable on a
+        # canvas holding several dozen points.
+        self.point_quality = quality
+        self.update_display()
+
+        self.set_status(quality.summary())
+        messagebox.showinfo("Registration quality", self._quality_report(quality))
+
+    @staticmethod
+    def _quality_report(quality) -> str:
+        """The assessment as readable prose."""
+        lines = []
+
+        if quality.leave_one_out.size:
+            lines.append(
+                "Leave-one-out residuals -- how far each point falls from a "
+                "fit that excludes it. A spline passes exactly through its "
+                "own control points, so this is what a bad correspondence "
+                "actually shows up in.\n"
+                f"    median {quality.median_residual:.2f} px"
+            )
+            worst = quality.worst_point
+            if worst is not None:
+                lines[-1] += (
+                    f", worst point {worst} at {quality.leave_one_out[worst]:.2f} px"
+                )
+
+            flagged = np.flatnonzero(quality.outliers)
+            if flagged.size:
+                lines.append(
+                    f"Points worth re-checking: {', '.join(map(str, flagged))}\n"
+                    "    Shown outlined in red on the canvas."
+                )
+            else:
+                lines.append("No point disagrees with the others.")
+
+        if quality.has_folds:
+            lines.append(
+                f"The mapping folds over itself across {quality.folded_fraction:.1%} "
+                "of the image (smallest Jacobian "
+                f"{quality.min_jacobian:.2f}).\n"
+                "    Folded regions come out mirrored. This usually means two "
+                "correspondences cross over each other."
+            )
+        else:
+            lines.append("The mapping does not fold anywhere.")
+
+        if quality.coverage is not None:
+            lines.append(
+                f"The points enclose {quality.coverage:.0%} of the image. "
+                "Everything outside that is extrapolated."
+            )
+
+        lines.append(f"Bending energy: {quality.bending_energy:.4g}")
+        return "\n\n".join(lines)
+
     # ========== ViewInterface Implementation ==========
 
     def on_data_loaded(self):
@@ -1497,6 +1587,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def on_points_changed(self):
         """Called when control points have changed."""
+        # The assessment described the points as they were; it no longer
+        # describes the points as they are.
+        self.point_quality = None
         self._update_point_count()
         self._refresh_edit_menu()
         self.update_display()
@@ -1574,6 +1667,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.show_points = True
         self.awaiting_corresponding_point = None
         self._drag = None
+        self.point_quality = None
         self._refresh_edit_menu()
 
         # Reset slice control
@@ -1665,6 +1759,14 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             data = ppm_header + image.tobytes()
         return tk.PhotoImage(width=width, height=height, data=data, format="PPM")
 
+    def _is_flagged(self, index: int) -> bool:
+        """True if the last quality check singled this point out."""
+        quality = getattr(self, "point_quality", None)
+        if quality is None:
+            return False
+        outliers = quality.outliers
+        return bool(index < len(outliers) and outliers[index])
+
     def _draw_points(self):
         """Draw control points on canvases."""
         # Scale points for current zoom
@@ -1681,13 +1783,18 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         # Draw source points
         for i, point in enumerate(src_points):
             x, y = point[0] * src_scale, point[1] * src_scale
+            # A flagged point gets a bigger, warning-coloured ring: a number in
+            # a report is no use if you cannot find the point on the canvas.
+            flagged = self._is_flagged(i)
+            radius = 7 if flagged else 4
             self.left_canvas.create_oval(
-                x - 4,
-                y - 4,
-                x + 4,
-                y + 4,
+                x - radius,
+                y - radius,
+                x + radius,
+                y + radius,
                 fill="white",
-                outline="red",
+                outline=self.palette.warning if flagged else "red",
+                width=3 if flagged else 1,
                 tags=f"point_{i}",
             )
             self.left_canvas.create_text(
@@ -1712,13 +1819,16 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         # Draw destination points
         for i, point in enumerate(dst_points):
             x, y = point[0] * dst_scale, point[1] * dst_scale
+            flagged = self._is_flagged(i)
+            radius = 7 if flagged else 4
             self.right_canvas.create_oval(
-                x - 4,
-                y - 4,
-                x + 4,
-                y + 4,
+                x - radius,
+                y - radius,
+                x + radius,
+                y + radius,
                 fill="white",
-                outline="green",
+                outline=self.palette.warning if flagged else "green",
+                width=3 if flagged else 1,
                 tags=f"point_{i}",
             )
             self.right_canvas.create_text(
