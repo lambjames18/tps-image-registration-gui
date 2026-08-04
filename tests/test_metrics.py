@@ -36,8 +36,8 @@ GRID = np.stack(
 ).reshape(-1, 2)
 
 
-def fit(src, dst=CORNERS, size=(100, 100), affine_only=False):
-    tform = ThinPlateSplineTransform(affine_only=affine_only)
+def fit(src, dst=CORNERS, size=(100, 100)):
+    tform = ThinPlateSplineTransform()
     tform.estimate(src, dst, size)
     return tform
 
@@ -125,13 +125,6 @@ class TestLeaveOneOut:
             src[bad] += np.array([30.0, 25.0])
             residuals = metrics.leave_one_out_residuals(src, GRID)
             assert np.nanargmax(residuals) == bad, f"missed a bad point at {bad}"
-
-    def test_affine_only_is_honoured(self, rng):
-        """An affine fit is assessed as an affine fit."""
-        src = CORNERS + rng.normal(0, 3, CORNERS.shape)
-        full = metrics.leave_one_out_residuals(src, CORNERS, affine_only=False)
-        affine = metrics.leave_one_out_residuals(src, CORNERS, affine_only=True)
-        assert not np.allclose(full, affine, equal_nan=True)
 
 
 class TestLeaveOneOutNeedsEnoughPoints:

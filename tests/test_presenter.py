@@ -460,6 +460,86 @@ class TestAssessingTheTransform:
         assert fake_view.errors
 
 
+class TestLiveResiduals:
+    """Per-point fit quality, cheap enough to recompute on every edit."""
+
+    @staticmethod
+    def _grid(n=4, extent=40.0):
+        axis = np.linspace(4.0, extent, n)
+        return np.stack(np.meshgrid(axis, axis), -1).reshape(-1, 2)
+
+    def _place(self, presenter, src, dst):
+        for (sx, sy), (dx, dy) in zip(src, dst, strict=True):
+            presenter.add_point("source", int(sx), int(sy))
+            presenter.add_point("destination", int(dx), int(dy))
+
+    def test_no_points_gives_nothing(self, loaded):
+        assert loaded.live_residuals() is None
+
+    def test_too_few_points_gives_nothing(self, loaded):
+        """Below the threshold the numbers are misleading, not merely noisy."""
+        from tpsreg import metrics
+
+        grid = self._grid()
+        self._place(loaded, grid[:4], grid[:4])
+        assert len(loaded.get_points()[0]) < metrics.MIN_POINTS_FOR_RESIDUALS
+        assert loaded.live_residuals() is None
+
+    def test_one_residual_per_point(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+
+        residuals = loaded.live_residuals()
+        assert residuals is not None
+        assert residuals.shape == (len(grid),)
+
+    def test_a_consistent_field_has_small_residuals(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+        assert float(np.max(loaded.live_residuals())) < 1e-6
+
+    def test_a_misplaced_point_stands_out(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+        loaded.move_point("source", 5, 38, 8)
+
+        residuals = loaded.live_residuals()
+        assert int(np.argmax(residuals)) == 5
+
+    def test_it_agrees_with_the_refitting_version(self, loaded):
+        """The fast path and the thorough one must not disagree.
+
+        metrics.leave_one_out_residuals refits once per point; this uses the
+        closed form. They are the same quantity and are allowed to differ only
+        by the point-set-dependent normalisation, which is nil at zero
+        smoothing.
+        """
+        from tpsreg import metrics
+
+        grid = self._grid()
+        src = grid.copy()
+        src[5] = src[5] + np.array([12.0, -9.0])
+        self._place(loaded, src, grid)
+
+        fast = loaded.live_residuals()
+        thorough = metrics.leave_one_out_residuals(*loaded.get_points())
+        np.testing.assert_allclose(fast, thorough, rtol=1e-6, atol=1e-9)
+
+    def test_it_is_fast_enough_to_run_on_every_click(self, loaded):
+        """The whole premise of showing it live."""
+        import time
+
+        grid = self._grid(n=6, extent=45.0)
+        self._place(loaded, grid, grid)
+
+        start = time.perf_counter()
+        for _ in range(10):
+            loaded.live_residuals()
+        elapsed = (time.perf_counter() - start) / 10
+
+        assert elapsed < 0.05, f"{elapsed * 1000:.1f} ms is too slow for live use"
+
+
 class TestSmoothing:
     """The regularization setting the view drives."""
 
@@ -569,9 +649,7 @@ class TestTransforms:
 
     def test_affine_transform_also_works(self, loaded):
         self._add_grid(loaded, jitter=2.0)
-        warped, _, _ = loaded.apply_transform(
-            TransformType.TPS_AFFINE, return_data=True
-        )
+        warped, _, _ = loaded.apply_transform(TransformType.TPS, return_data=True)
         assert np.all(np.isfinite(warped))
 
     def test_preview_reaches_the_view(self, loaded, fake_view):

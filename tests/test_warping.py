@@ -34,12 +34,7 @@ class TestGetTransform:
     def test_tps_mode(self, grid_points):
         tform = get_transform(grid_points, grid_points, "tps", (64, 64))
         assert isinstance(tform, ThinPlateSplineTransform)
-        assert not tform.affine_only
-
-    def test_tps_affine_mode(self, grid_points):
-        tform = get_transform(grid_points, grid_points, "tps affine", (64, 64))
-        assert isinstance(tform, ThinPlateSplineTransform)
-        assert tform.affine_only
+        assert tform._estimated
 
     def test_mode_is_case_insensitive(self, grid_points):
         tform = get_transform(grid_points, grid_points, "TPS", (64, 64))

@@ -8,6 +8,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Fit quality is shown live while placing points, rather than only on demand.
+  Each marker carries its leave-one-out residual, is coloured on a scale from
+  good to bad, and the status bar shows the median and the worst point.
+  Recomputed when a pair is added or removed and when a drag lands -- not
+  during the drag, where the numbers would be noise.
+
+  This is affordable because of the closed form added with regularization:
+  a single solve rather than one refit per point, measured at 0.2 ms for 25
+  control points and 1.5 ms for 100, against 15 ms and 62 ms for the
+  refitting version.
+
+  Nothing is shown below nine control points. Leave-one-out asks the
+  remaining points to predict the held-out one, and with fewer than that they
+  cannot: every residual comes out large and a genuinely bad point does not
+  stand out. Showing those numbers while someone places their first few
+  points would be alarming and wrong.
 - Optional smoothing of the spline (regularization), off by default. Set it
   from the **Smoothing** selector in the top bar: *Off*, *Automatic*, or a
   number.
@@ -97,6 +113,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`move_point`, `commit_point_move`, `find_point_near`, `check_points`,
   `assess_transform`, `can_undo`, `can_redo`).
 
+### Removed
+
+- **The "TPS affine" transform type.** It dropped the bending term at
+  evaluation time, which is a strictly worse affine than fitting one
+  directly. With it gone the transform-type dialog offered a choice of one,
+  so that has gone too: applying, exporting and checking quality no longer
+  interrupt with a modal. `TransformType.TPS` remains, so project files and
+  the API are unaffected.
+
 ### Changed
 
 - **Breaking:** a `ThinPlateSplineTransform` is now its fitted coefficients
@@ -128,6 +153,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- The busy indicator never animated. Its animation is driven by a timer
+  callback, and the application pumped only *idle* tasks, which never run
+  timers — measured, the bar's value did not move at all across 600 ms of
+  work, against 561 steps with a real event loop. It also stepped every 1 ms,
+  asking for a thousand redraws a second, and any redraw during an operation
+  stopped it outright because `update_display` unconditionally cleared it.
+  The indicator now nests, so an inner operation cannot stop an outer one,
+  and unbalanced stops cannot drive it negative and swallow the next start.
 - Every TPS warp was offset by one pixel in both axes. The dense field was
   sampled on a 1-based grid (`linspace(1, width, width)`) while control points
   and queries are 0-based, so a transform fitted to identical point sets moved

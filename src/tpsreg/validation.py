@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 #: Control points needed before a transform can be estimated at all.
 MINIMUM_POINTS: dict[str, int] = {
     "tps": 3,
-    "tps_affine": 3,
 }
 
 #: Fallback when a transform type is not listed above.

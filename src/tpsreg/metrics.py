@@ -38,6 +38,13 @@ from tpsreg.validation import convex_hull_area
 
 logger = logging.getLogger(__name__)
 
+#: Fewest control points at which leave-one-out means anything. Below this the
+#: measure asks the remaining points to predict the held-out one and they
+#: cannot, so every residual is large and a genuinely bad point does not stand
+#: out. Measured on a regular grid with one point displaced 25 px, the bad
+#: point ranks first from nine points upwards and not reliably below.
+MIN_POINTS_FOR_RESIDUALS = 9
+
 #: Modified z-score above which a leave-one-out residual is called an outlier.
 #: Uses the median and MAD rather than mean and standard deviation, because a
 #: bad point inflates the standard deviation enough to hide itself.
@@ -121,7 +128,6 @@ class TransformQuality:
 def leave_one_out_residuals(
     src: np.ndarray,
     dst: np.ndarray,
-    affine_only: bool = False,
 ) -> np.ndarray:
     """Distance each control point falls from a fit that excludes it.
 
@@ -135,8 +141,6 @@ def leave_one_out_residuals(
     ----------
     src, dst:
         ``(K, 2)`` corresponding control points.
-    affine_only:
-        Fit only the affine part, matching the transform being assessed.
 
     Returns
     -------
@@ -177,7 +181,7 @@ def leave_one_out_residuals(
         keep[index] = False
 
         try:
-            reduced = ThinPlateSplineTransform(affine_only=affine_only)
+            reduced = ThinPlateSplineTransform()
             reduced.estimate(src[keep], dst[keep])
             predicted = reduced.map(dst[index : index + 1])[0]
         except ValueError as exc:
@@ -355,9 +359,7 @@ def assess(
     quality = TransformQuality()
 
     if include_leave_one_out and len(src):
-        quality.leave_one_out = leave_one_out_residuals(
-            src, dst, affine_only=getattr(tform, "affine_only", False)
-        )
+        quality.leave_one_out = leave_one_out_residuals(src, dst)
         quality.outliers = flag_outliers(quality.leave_one_out)
         if np.any(np.isfinite(quality.leave_one_out)):
             quality.worst_point = int(np.nanargmax(quality.leave_one_out))

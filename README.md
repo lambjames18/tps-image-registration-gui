@@ -146,13 +146,21 @@ you can dismiss.
 
 The left and right panels show the source and destination images. The top bar
 controls the slice (for 3D data), the displayed modality, CLAHE, zoom, view
-linking, resolution matching, and smoothing. The bottom bar shows status and a progress bar
-during long operations.
+linking, resolution matching, and smoothing. The bottom bar shows the cursor
+position, the point count, the live fit quality, a status message, and a busy
+indicator during long operations.
 
 Left-click places a control point. Right-clicking near one removes the pair.
 Dragging a point moves it, which is the quick way to correct a click that
 landed slightly off; the whole drag is a single undo step. **Link views** ties
 the two panels together so zooming or scrolling one does the same to the other.
+
+Once there are nine or more pairs, each marker shows its leave-one-out
+residual and is coloured from green to orange by how large it is, and the
+status bar shows the median and the worst point. These update as you place,
+delete and drag points, so a bad correspondence is visible while you are still
+looking at it. Below nine points nothing is shown — see the note under *Check
+registration quality* for why.
 
 ### File menu
 
