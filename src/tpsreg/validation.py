@@ -1,10 +1,18 @@
 """Checks that run over control points before a transform is estimated.
 
 Estimating a thin-plate spline over bad control points does not fail politely.
-Coincident source points make the system matrix singular, collinear points make
-the affine block singular, and points huddled in one corner produce a fit that
-extrapolates wildly everywhere else. All three used to surface as a LinAlgError
-or a nonsense image several seconds later.
+The system matrix is built from the *destination* points, so coincident ones
+give it two identical rows and collinear ones leave its ``[1, x, y]`` block
+rank-deficient; either way it is singular. Degenerate source points are a
+different problem -- the solve succeeds and the resulting warp is useless.
+Points huddled in one corner solve fine and extrapolate wildly everywhere else.
+All of these used to surface as a LinAlgError, or as a nonsense image, several
+seconds later.
+
+What counts as an error here is kept in step with what
+:mod:`tpsreg.tps` actually refuses, and there are tests that check the two
+against each other. A warning that the solver turns out to reject, or an error
+it would have accepted, is worse than no check.
 
 Everything here is pure numpy so the view can ask "is this going to work?"
 before it starts, and so the checks can be tested without a display.
@@ -121,21 +129,31 @@ def _duplicate_pairs(points: np.ndarray, tolerance: float) -> list[tuple[int, in
     return [(int(r), int(c)) for r, c in zip(rows, cols, strict=True)]
 
 
-def _is_collinear(points: np.ndarray, tolerance: float = COLLINEAR_TOLERANCE) -> bool:
+def points_are_collinear(
+    points: object, tolerance: float = COLLINEAR_TOLERANCE
+) -> bool:
     """True when every point lies on (or very near) a single straight line.
 
     Compares the two singular values of the centred coordinates: a line has
     all its spread along one direction, so the second value collapses to zero.
+
+    This is the geometric test behind both the advisory check here and the
+    hard rejection in :mod:`tpsreg.tps`. It costs microseconds on the point
+    counts involved, and unlike asking LAPACK to notice a singular matrix it
+    gives the same answer on every platform.
+
+    Notes
+    -----
+    Fewer than three points, and clouds where every point is identical, both
+    return False. Each has a dedicated check with a more useful message.
     """
+    points = _as_2d(points)
     if len(points) < 3:
-        # Two points are always collinear, but that is caught by the
-        # "too few points" check, which gives a more useful message.
         return False
 
     centred = points - points.mean(axis=0)
     singular_values = np.linalg.svd(centred, compute_uv=False)
     if singular_values[0] == 0:
-        # Every point is identical; the duplicate check reports that better.
         return False
     return bool(singular_values[1] / singular_values[0] < tolerance)
 
@@ -249,8 +267,26 @@ def check_control_points(
             )
         )
 
-    # Coincident source points give the spline two different answers at the
-    # same location, which makes its system matrix singular.
+    # Two destination points in one place give the system matrix two identical
+    # rows, which is what makes it singular.
+    dst_duplicates = _duplicate_pairs(dst, duplicate_tolerance)
+    if dst_duplicates:
+        first, second = dst_duplicates[0]
+        issues.append(
+            Issue(
+                Severity.ERROR,
+                "duplicate_destination_points",
+                f"Destination points {first} and {second} are in the same "
+                f"place ({len(dst_duplicates)} such pair"
+                f"{'s' if len(dst_duplicates) != 1 else ''} in total). "
+                "Move or delete one of each; two points at one location "
+                "leave the spline system unsolvable.",
+            )
+        )
+
+    # Coincident source points do not make the system singular, but they do
+    # ask for two destination features to come from one source location, which
+    # is ambiguous. The solver refuses them, so this is an error too.
     src_duplicates = _duplicate_pairs(src, duplicate_tolerance)
     if src_duplicates:
         first, second = src_duplicates[0]
@@ -261,43 +297,32 @@ def check_control_points(
                 f"Source points {first} and {second} are in the same place "
                 f"({len(src_duplicates)} such pair"
                 f"{'s' if len(src_duplicates) != 1 else ''} in total). "
-                "Move or delete one of each; the fit cannot resolve two "
-                "answers at one location.",
+                "Move or delete one of each; two destination features cannot "
+                "both come from one source point.",
             )
         )
 
-    # Coincident destination points are solvable, just contradictory: two
-    # separate source features are being sent to the same spot.
-    dst_duplicates = _duplicate_pairs(dst, duplicate_tolerance)
-    if dst_duplicates:
-        first, second = dst_duplicates[0]
-        issues.append(
-            Issue(
-                Severity.WARNING,
-                "duplicate_destination_points",
-                f"Destination points {first} and {second} are in the same "
-                "place, so two different source features map to one spot. "
-                "This usually means a point was placed twice by mistake.",
-            )
-        )
-
-    if _is_collinear(src):
-        issues.append(
-            Issue(
-                Severity.ERROR,
-                "collinear_source_points",
-                "All source points lie on a straight line. Spread them out "
-                "across the image; a line gives no information about the "
-                "direction perpendicular to it.",
-            )
-        )
-    elif _is_collinear(dst):
+    # Destination collinearity is checked first because it is the one that
+    # makes the system singular, and because it is the one the solver rejects
+    # first -- so the message here matches the message the solver would give.
+    if points_are_collinear(dst):
         issues.append(
             Issue(
                 Severity.ERROR,
                 "collinear_destination_points",
-                "All destination points lie on a straight line. Spread them "
-                "out across the image.",
+                "All destination points lie on a straight line, which leaves "
+                "the spline system singular. Spread them out across the "
+                "image; a line says nothing about the direction across it.",
+            )
+        )
+    elif points_are_collinear(src):
+        issues.append(
+            Issue(
+                Severity.ERROR,
+                "collinear_source_points",
+                "All source points lie on a straight line, so the transform "
+                "would collapse the image onto a line. Spread them out "
+                "across the image.",
             )
         )
 

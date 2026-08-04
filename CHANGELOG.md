@@ -15,7 +15,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   make the fit impossible — too few points, coincident points, points all on
   one line, a half-finished pair — are reported by name and block estimation;
   problems that only degrade the result, such as points clustered in one part
-  of the image, warn and can be dismissed. New `tpsreg.validation` module.
+  of the image, warn and can be dismissed. New `tpsreg.validation` module,
+  with tests pinning what it calls an error to what the solver actually
+  refuses.
 - "Link views" checkbox: zooming or scrolling either panel does the same to
   the other, so a feature stays in the same place in both.
 - Checkerboard and difference comparison modes in the 2D preview, alongside the
@@ -30,6 +32,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Collinear control points produced a garbage transform instead of an error on
+  Linux and Windows. The solver relied on `np.linalg.solve` raising
+  `LinAlgError` for a singular system, and whether it does depends on the
+  LAPACK build: macOS Accelerate raised, the OpenBLAS builds on the CI runners
+  returned a nonsense result for the identical points. `estimate` now tests the
+  control point geometry directly — costing microseconds, and giving the same
+  answer everywhere — and verifies the solution by substituting it back, so an
+  inaccurate solve is caught whatever the cause.
 - Clicks were recorded up to one image pixel away from where they were aimed
   when zoomed past 100%. The canvas-to-image conversion divided the event
   position and the canvas origin separately and truncated each, so the last
