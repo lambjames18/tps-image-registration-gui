@@ -240,7 +240,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
     def _setup_window(self):
         """Setup main window properties."""
         self.title("Multimodal Data Alignment Tool")
-        self.geometry("1400x900")
+        self.geometry("1500x900")
 
         # Configure grid weights
         self.grid_rowconfigure(0, weight=0)  # Menu area
@@ -1744,8 +1744,10 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def on_project_loaded(self):
         """Called when a project has been loaded."""
-        self.on_data_loaded()
+        self._refresh_residuals()
         self._update_point_count()
+        self._refresh_edit_menu()
+        self.on_data_loaded()
         self.set_status("Project loaded")
 
     def on_request_corresponding_point(self, target: str):
@@ -1996,19 +1998,40 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         if residual is not None and self.show_residuals:
             label = f"{index}: {residual:.1f}"
 
-        for colour, font in (
-            (outline_colour, ("Arial", 11, "bold")),
-            ("white", ("Arial", 10)),
-        ):
-            canvas.create_text(
-                x + 5,
-                y - 5,
-                text=label,
-                fill=colour,
-                anchor="sw",
-                tags=f"point_{index}",
-                font=font,
-            )
+        def create_outlined_text(canvas, x, y, text, text_color, outline_color, font, thickness=1):
+            # Draw the outline by cloning the text in 8 directions around the center
+            kwargs = dict(text=text, font=font, anchor="sw", tags=f"point_{index}")
+            for dx in range(-thickness, thickness + 1):
+                for dy in range(-thickness, thickness + 1):
+                    if dx != 0 or dy != 0:
+                        canvas.create_text(x + dx, y + dy, fill=outline_color, **kwargs)
+                        
+            # Draw the main foreground text exactly in the center
+            return canvas.create_text(x, y, fill=text_color, **kwargs)
+
+        create_outlined_text(
+            canvas,
+            x + 5,
+            y - 5,
+            text=label,
+            text_color="white",
+            outline_color=outline_colour,
+            font=("Arial", 10),
+        )
+
+        # for colour, font in (
+        #     (outline_colour, ("Arial", 11, "bold")),
+        #     ("white", ("Arial", 10)),
+        # ):
+            # canvas.create_text(
+            #     x + 5,
+            #     y - 5,
+            #     text=label,
+            #     fill=colour,
+            #     font=font,
+            #     anchor="sw",
+            #     tags=f"point_{index}",
+            # )
 
     def set_status(self, message: str):
         """Update status bar."""
