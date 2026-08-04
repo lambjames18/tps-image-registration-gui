@@ -199,11 +199,14 @@ jobs:
           for module in [
               "tpsreg",
               "tpsreg.models",
+              "tpsreg.overlays",
               "tpsreg.presenter",
               "tpsreg.ransac",
               "tpsreg.resources_util",
               "tpsreg.roma_matcher",
+              "tpsreg.theme",
               "tpsreg.tps",
+              "tpsreg.validation",
               "tpsreg.warping",
           ]:
               importlib.import_module(module)

@@ -13,6 +13,8 @@ from collections.abc import Callable
 import numpy as np
 from scipy.spatial.distance import cdist
 
+from tpsreg.validation import points_are_collinear
+
 logger = logging.getLogger(__name__)
 
 # Minimum number of non-collinear control points needed to solve the TPS system.
@@ -158,6 +160,25 @@ class ThinPlateSplineTransform:
         if np.unique(dst, axis=0).shape[0] != dst.shape[0]:
             raise ValueError("Destination control points contain duplicates.")
 
+        # Collinear points are rejected here rather than left to LAPACK. The
+        # system matrix is built from the destination points, and a line makes
+        # its [1, x, y] block rank-deficient -- but whether np.linalg.solve
+        # notices depends on the LAPACK build. macOS Accelerate raised;
+        # OpenBLAS on the CI runners returned a garbage transform for the same
+        # points. Testing the geometry directly costs microseconds and gives
+        # the same answer everywhere.
+        if points_are_collinear(dst):
+            raise ValueError(
+                "Destination control points are collinear, which leaves the "
+                "thin-plate spline system singular. Spread the points out "
+                "across the image."
+            )
+        if points_are_collinear(src):
+            raise ValueError(
+                "Source control points are collinear, so the transform would "
+                "collapse the image onto a line. Spread the points out."
+            )
+
         return True
 
     def estimate(
@@ -219,6 +240,27 @@ class ThinPlateSplineTransform:
                 "Could not solve the thin-plate spline system. This usually "
                 "means the control points are collinear or nearly coincident."
             ) from exc
+
+        # A silently bad solve is worse than a loud one, and whether LAPACK
+        # raises on a near-singular system varies by build. Substituting the
+        # answer back is O(K**2) against the O(K**3) solve, so the check is
+        # free, and it catches any ill-conditioning rather than only the
+        # degenerate geometries checked above.
+        if not np.all(np.isfinite(params)):
+            raise ValueError(
+                "The thin-plate spline solution is not finite. The control "
+                "points are too close to degenerate; spread them out or "
+                "remove near-coincident pairs."
+            )
+
+        residual = np.abs(L @ params - Y).max()
+        scale = max(np.abs(Y).max(), 1.0)
+        if residual > 1e-6 * scale:
+            raise ValueError(
+                "The thin-plate spline system could not be solved accurately "
+                f"(residual {residual:.3g}). The control points are close to "
+                "collinear or coincident; spread them out."
+            )
 
         wi = params[:n, :]
         a1 = params[n, :]

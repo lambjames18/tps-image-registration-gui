@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from tpsreg import validation
 from tpsreg.models import (
     DataFormat,
     ImageData,
@@ -577,6 +578,160 @@ class ApplicationPresenter:
         except Exception as e:
             logger.error("Failed to remove point: %s", e)
             self._notify_view_error(f"Failed to remove point: {e!s}, ({parse_error()})")
+
+    def move_point(
+        self, source: str, point_index: int, x: int, y: int, transient: bool = False
+    ) -> bool:
+        """Move an existing control point to a new location.
+
+        This is what dragging a marker calls. Before it existed the only way to
+        nudge a slightly misplaced click was to delete the pair and re-place
+        both halves.
+
+        Parameters
+        ----------
+        source:
+            "source" or "destination".
+        point_index:
+            Index of the point within the current slice.
+        x, y:
+            New position, in the same displayed coordinates that
+            :meth:`add_point` takes.
+        transient:
+            True for the intermediate steps of a drag. A drag fires a move for
+            every mouse motion, and recording each one would push the rest of
+            the undo history off the end of the stack and rewrite the points
+            file dozens of times per second. Transient moves update the points
+            and redraw, nothing more; the caller finishes with
+            :meth:`commit_point_move`.
+
+        Returns
+        -------
+        bool
+            True if the point moved.
+        """
+        try:
+            if source not in ("source", "destination"):
+                raise ValueError(f"Unknown point target: {source!r}")
+
+            image = self.source_image if source == "source" else self.destination_image
+            if image is None:
+                logger.warning(
+                    "Cannot move a %s point before an image is loaded", source
+                )
+                return False
+
+            if not self.is_point_in_bounds(source, x, y):
+                logger.warning(
+                    "Ignoring %s point move to (%d, %d): outside the image bounds",
+                    source,
+                    x,
+                    y,
+                )
+                return False
+
+            # Destination coordinates arrive at the source scale when
+            # resolutions are matched, exactly as in add_point.
+            if source == "destination" and self.match_resolutions:
+                src_res, dst_res = self.get_resolutions()
+                res_scale = src_res / dst_res
+                x, y = int(x * res_scale), int(y * res_scale)
+
+            moved = self.point_manager.move_point(
+                source,
+                self.current_slice,
+                point_index,
+                x,
+                y,
+                record_history=not transient,
+            )
+            if not moved:
+                return False
+
+            if not transient:
+                self._save_points()
+                self.project_manager.mark_modified()
+            self._notify_view_points_changed()
+            return True
+
+        except Exception as e:
+            logger.error("Failed to move point: %s", e)
+            self._notify_view_error(f"Failed to move point: {e!s}, ({parse_error()})")
+            return False
+
+    def commit_point_move(self) -> None:
+        """Persist the result of a drag made up of transient moves.
+
+        The undo entry was already recorded by the drag's first, non-transient
+        move, so this only has to write the points out and mark the project
+        dirty.
+        """
+        self._save_points()
+        self.project_manager.mark_modified()
+
+    def find_point_near(
+        self, source: str, x: float, y: float, radius: float
+    ) -> int | None:
+        """Index of the control point nearest ``(x, y)``, if one is close enough.
+
+        Hit testing lives here rather than in the view so it works in the same
+        displayed coordinates that clicks arrive in, including the destination
+        rescaling that ``match_resolutions`` applies.
+
+        Returns
+        -------
+        int | None
+            The nearest point within ``radius``, or None if there is none.
+        """
+        src_points, dst_points = self.get_points()
+        points = src_points if source == "source" else dst_points
+
+        if points is None or len(points) == 0:
+            return None
+
+        points = np.asarray(points, dtype=float)
+        if source == "destination" and self.match_resolutions:
+            src_res, dst_res = self.get_resolutions()
+            points = points * (dst_res / src_res)
+
+        distances = np.hypot(points[:, 0] - x, points[:, 1] - y)
+        nearest = int(np.argmin(distances))
+        if distances[nearest] > radius:
+            return None
+        return nearest
+
+    def can_undo(self) -> bool:
+        """True if there is a point change to undo."""
+        return self.point_manager.can_undo()
+
+    def can_redo(self) -> bool:
+        """True if there is an undone point change to reapply."""
+        return self.point_manager.can_redo()
+
+    def check_points(self, transform_type: Any = None) -> list[validation.Issue]:
+        """Report anything that will make transform estimation fail or disappoint.
+
+        Called before estimating so the view can warn while the points are
+        still on screen and easy to fix.
+        """
+        src_points, dst_points = self.get_points()
+
+        image_shape = None
+        if self.source_image is not None:
+            try:
+                image_shape = self.source_image.get_slice(
+                    self.current_source_mode, self.current_slice
+                ).shape
+            except (KeyError, IndexError):
+                # Coverage is the only check that needs this; the rest still run.
+                logger.debug("Could not determine source shape for point checks")
+
+        return validation.check_control_points(
+            src_points,
+            dst_points,
+            transform_type=transform_type or TransformType.TPS,
+            image_shape=image_shape,
+        )
 
     def clear_points(self, slice_only: bool = True) -> None:
         """Clear control points."""

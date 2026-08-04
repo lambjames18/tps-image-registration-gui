@@ -146,6 +146,28 @@ class PointSet:
         )
         return False
 
+    def move_point(self, slice_idx: int, point_idx: int, x: float, y: float) -> bool:
+        """Move an existing point to a new location.
+
+        Returns
+        -------
+        bool
+            True if a point was moved, False if the slice or index does not
+            exist.
+        """
+        points = self.points.get(slice_idx)
+        if points is None or not (0 <= point_idx < len(points)):
+            logger.debug(
+                "No point at index %d on slice %d; nothing moved", point_idx, slice_idx
+            )
+            return False
+
+        points[point_idx] = Point(x, y, slice_idx)
+        logger.debug(
+            "Moved point %d on slice %d to (%s, %s)", point_idx, slice_idx, x, y
+        )
+        return True
+
     def get_points_array(self, slice_idx: int | None = None) -> np.ndarray:
         """Get points as numpy array for a specific slice or all slices."""
         if slice_idx is not None:
@@ -316,6 +338,48 @@ class PointManager:
         self.destination_points.remove_point(slice_idx, point_idx)
         logger.debug("Removed point pair at slice %d, index %d", slice_idx, point_idx)
         return True
+
+    def move_point(
+        self,
+        which: str,
+        slice_idx: int,
+        point_idx: int,
+        x: float,
+        y: float,
+        record_history: bool = True,
+    ) -> bool:
+        """Move one half of a point pair, recording it for undo.
+
+        Only one side moves: dragging a source marker must not drag its
+        partner. Nothing is pushed onto the undo stack when there is no such
+        point, so a drag that lands on nothing cannot fill the history with
+        no-ops.
+
+        Parameters
+        ----------
+        which:
+            "source" or "destination".
+        record_history:
+            Set False for the intermediate steps of a drag, so that the whole
+            gesture is a single undo entry rather than one per mouse motion.
+        """
+        if which not in ("source", "destination"):
+            raise ValueError(f"Unknown point set: {which!r}")
+
+        point_set = self.source_points if which == "source" else self.destination_points
+        existing = point_set.points.get(slice_idx, [])
+        if not (0 <= point_idx < len(existing)):
+            logger.warning(
+                "No %s point at slice %d index %d; nothing moved",
+                which,
+                slice_idx,
+                point_idx,
+            )
+            return False
+
+        if record_history:
+            self._save_state()
+        return point_set.move_point(slice_idx, point_idx, x, y)
 
     def get_point_pairs(
         self, slice_idx: int | None = None
@@ -506,6 +570,19 @@ class PointManager:
             self._history.pop(0)
 
         self._history_index = len(self._history) - 1
+
+    def can_undo(self) -> bool:
+        """True if :meth:`undo` would do something.
+
+        Lets the view grey out the menu entry rather than offering an action
+        that silently does nothing. The condition mirrors :meth:`undo` exactly;
+        keep them in step.
+        """
+        return self._history_index >= 0
+
+    def can_redo(self) -> bool:
+        """True if :meth:`redo` would do something."""
+        return self._history_index + 2 < len(self._history)
 
     def undo(self) -> bool:
         """Revert the most recent change.

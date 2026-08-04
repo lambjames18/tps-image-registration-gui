@@ -200,6 +200,202 @@ class TestPointEditing:
         np.testing.assert_array_equal(dst, [[20, 22], [40, 42]])
 
 
+class TestMovingPoints:
+    """Dragging a marker, as the canvas drives it."""
+
+    @pytest.fixture
+    def with_pair(self, loaded):
+        loaded.add_point("source", 10, 12)
+        loaded.add_point("destination", 20, 22)
+        return loaded
+
+    def test_moving_a_source_point(self, with_pair):
+        assert with_pair.move_point("source", 0, 15, 18) is True
+
+        src, dst = with_pair.get_points()
+        np.testing.assert_array_equal(src, [[15, 18]])
+        np.testing.assert_array_equal(dst, [[20, 22]])
+
+    def test_moving_a_destination_point(self, with_pair):
+        assert with_pair.move_point("destination", 0, 25, 27) is True
+
+        src, dst = with_pair.get_points()
+        np.testing.assert_array_equal(src, [[10, 12]])
+        np.testing.assert_array_equal(dst, [[25, 27]])
+
+    def test_a_move_outside_the_image_is_refused(self, with_pair):
+        assert with_pair.move_point("source", 0, 9999, 9999) is False
+        np.testing.assert_array_equal(with_pair.get_points()[0], [[10, 12]])
+
+    def test_moving_a_point_that_does_not_exist_is_refused(self, with_pair):
+        assert with_pair.move_point("source", 7, 15, 18) is False
+
+    def test_an_unknown_side_is_refused_not_raised(self, with_pair, fake_view):
+        """The canvas type comes from a binding; a typo must not crash the app."""
+        assert with_pair.move_point("middle", 0, 15, 18) is False
+        assert fake_view.errors
+
+    def test_moving_before_an_image_is_loaded_is_refused(self, presenter):
+        assert presenter.move_point("source", 0, 5, 5) is False
+
+    def test_a_move_marks_the_project_modified(self, with_pair):
+        with_pair.project_manager.is_modified = False
+        with_pair.move_point("source", 0, 15, 18)
+        assert with_pair.project_manager.is_modified is True
+
+    def test_a_move_tells_the_view_to_redraw(self, with_pair, fake_view):
+        before = fake_view.calls.count("points_changed")
+        with_pair.move_point("source", 0, 15, 18)
+        assert fake_view.calls.count("points_changed") > before
+
+    def test_a_transient_move_still_redraws(self, with_pair, fake_view):
+        """The marker has to follow the cursor while the drag is in progress."""
+        before = fake_view.calls.count("points_changed")
+        with_pair.move_point("source", 0, 15, 18, transient=True)
+        assert fake_view.calls.count("points_changed") > before
+        np.testing.assert_array_equal(with_pair.get_points()[0], [[15, 18]])
+
+    def test_a_transient_move_leaves_the_project_clean(self, with_pair):
+        """Intermediate drag frames must not rewrite the points file."""
+        with_pair.project_manager.is_modified = False
+        with_pair.move_point("source", 0, 15, 18, transient=True)
+        assert with_pair.project_manager.is_modified is False
+
+    def test_committing_marks_the_project_modified(self, with_pair):
+        with_pair.project_manager.is_modified = False
+        with_pair.move_point("source", 0, 15, 18, transient=True)
+        with_pair.commit_point_move()
+        assert with_pair.project_manager.is_modified is True
+
+    def test_a_whole_drag_undoes_in_one_step(self, with_pair):
+        """The gesture is one edit, not one per mouse motion."""
+        with_pair.move_point("source", 0, 11, 13)
+        for step in range(14, 30):
+            with_pair.move_point("source", 0, step, step, transient=True)
+        with_pair.commit_point_move()
+
+        with_pair.undo()
+        np.testing.assert_array_equal(with_pair.get_points()[0], [[10, 12]])
+
+    def test_a_destination_move_respects_matched_resolutions(self, loaded):
+        """Displayed destination coordinates are at the source scale.
+
+        add_point converts them back before storing, and a move has to make
+        exactly the same conversion or dragging a point would teleport it.
+        """
+        loaded.set_image_resolutions(1.0, 2.0)
+        loaded.match_resolutions = True
+
+        loaded.add_point("source", 10, 12)
+        loaded.add_point("destination", 20, 24)
+        stored_after_add = loaded.get_points()[1].copy()
+
+        loaded.move_point("destination", 0, 20, 24)
+        np.testing.assert_array_equal(loaded.get_points()[1], stored_after_add)
+
+
+class TestFindingPointsNearACursor:
+    """Hit testing, which decides whether a press grabs a marker."""
+
+    @pytest.fixture
+    def with_points(self, loaded):
+        for x, y in ((10, 10), (30, 30), (50, 20)):
+            loaded.add_point("source", x, y)
+            loaded.add_point("destination", x + 1, y + 1)
+        return loaded
+
+    def test_a_press_on_a_marker_finds_it(self, with_points):
+        assert with_points.find_point_near("source", 30, 30, radius=8) == 1
+
+    def test_a_press_near_a_marker_finds_it(self, with_points):
+        assert with_points.find_point_near("source", 33, 32, radius=8) == 1
+
+    def test_a_press_in_empty_space_finds_nothing(self, with_points):
+        assert with_points.find_point_near("source", 200, 200, radius=8) is None
+
+    def test_just_outside_the_radius_finds_nothing(self, with_points):
+        assert with_points.find_point_near("source", 40, 30, radius=8) is None
+
+    def test_the_nearest_marker_wins(self, with_points):
+        """Two markers within reach: the closer one is the one being grabbed."""
+        assert with_points.find_point_near("source", 48, 21, radius=40) == 2
+
+    def test_destination_points_are_searched_separately(self, with_points):
+        assert with_points.find_point_near("destination", 31, 31, radius=4) == 1
+
+    def test_no_points_at_all_finds_nothing(self, loaded):
+        assert loaded.find_point_near("source", 10, 10, radius=8) is None
+
+    def test_hit_testing_respects_matched_resolutions(self, loaded):
+        """Markers are drawn at the source scale, so hits are tested there too."""
+        loaded.set_image_resolutions(1.0, 2.0)
+        loaded.add_point("source", 10, 10)
+        loaded.add_point("destination", 10, 10)
+
+        loaded.match_resolutions = True
+        # Stored at 10,10 but drawn at 20,20; a press at 20,20 must hit.
+        assert loaded.find_point_near("destination", 20, 20, radius=3) == 0
+        assert loaded.find_point_near("destination", 10, 10, radius=3) is None
+
+
+class TestCheckingPointsBeforeEstimating:
+    """The presenter's wrapper around the validation checks."""
+
+    def test_no_points_is_reported_as_an_error(self, loaded):
+        issues = loaded.check_points(TransformType.TPS)
+        assert issues
+        assert any(issue.is_error for issue in issues)
+
+    def test_good_points_pass(self, loaded):
+        for x, y in ((5, 5), (45, 6), (6, 45), (44, 44), (25, 12), (12, 26)):
+            loaded.add_point("source", x, y)
+            loaded.add_point("destination", x + 1, y + 1)
+
+        assert loaded.check_points(TransformType.TPS) == []
+
+    def test_duplicate_points_are_reported(self, loaded):
+        for x, y in ((5, 5), (45, 6), (6, 45), (44, 44), (25, 12), (5, 5)):
+            loaded.add_point("source", x, y)
+            loaded.add_point("destination", x + 1, y + 1)
+
+        codes = {issue.code for issue in loaded.check_points(TransformType.TPS)}
+        assert "duplicate_source_points" in codes
+
+    def test_coverage_uses_the_loaded_image_size(self, loaded):
+        """Clustered points only look clustered relative to the image."""
+        for x, y in ((2, 2), (5, 2), (2, 5), (5, 5), (3, 4), (4, 3)):
+            loaded.add_point("source", x, y)
+            loaded.add_point("destination", x, y)
+
+        codes = {issue.code for issue in loaded.check_points(TransformType.TPS)}
+        assert "poor_coverage" in codes
+
+    def test_defaults_to_tps_when_no_type_is_given(self, loaded):
+        assert loaded.check_points() == loaded.check_points(TransformType.TPS)
+
+    def test_checking_without_an_image_still_works(self, presenter):
+        """The dialog may be reached before anything is loaded."""
+        issues = presenter.check_points(TransformType.TPS)
+        assert {issue.code for issue in issues} == {"no_points"}
+
+
+class TestUndoAvailability:
+    """What the Edit menu should be showing."""
+
+    def test_nothing_to_undo_on_a_fresh_project(self, presenter):
+        assert presenter.can_undo() is False
+        assert presenter.can_redo() is False
+
+    def test_placing_a_point_makes_undo_available(self, loaded):
+        loaded.add_point("source", 10, 12)
+        assert loaded.can_undo() is True
+
+    def test_undoing_makes_redo_available(self, loaded):
+        loaded.add_point("source", 10, 12)
+        loaded.undo()
+        assert loaded.can_redo() is True
+
+
 class TestDisplayState:
     """View mode, slice and resolution settings."""
 
