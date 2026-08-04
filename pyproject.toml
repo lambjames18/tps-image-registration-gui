@@ -61,6 +61,7 @@ matchanything = [
     "loguru>=0.7",
     "yacs>=0.1.8",
     "opencv-python-headless>=4.8",
+    "joblib",
 ]
 
 [project.scripts]
