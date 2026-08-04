@@ -138,8 +138,90 @@ class TestThemeFallback:
                 window.destroy()
 
     def test_unknown_style_is_rejected(self, app):
-        with pytest.raises(ValueError, match="Unknown style"):
+        """Validation lives in tpsreg.theme.get_palette, which names the options."""
+        with pytest.raises(ValueError, match="Unknown theme"):
             app._style_call("solarized")
+
+
+class TestPopupStyling:
+    """Popup windows must look like the main window.
+
+    ttk styling reaches ttk widgets application-wide, but never the Toplevel
+    itself or plain Tk widgets like a canvas. Those were being left at the
+    platform default, or hardcoded to "gray", which is what made the popups
+    look inconsistent.
+    """
+
+    @staticmethod
+    def _images():
+        rng = np.random.default_rng(0)
+        image = (rng.random((48, 48)) * 255).astype(np.uint8)
+        points = np.array([[8, 8], [30, 30], [16, 40]], dtype=float)
+        return image, points
+
+    @pytest.fixture
+    def popups(self, app):
+        """Every popup viewer, opened and cleaned up afterwards."""
+        import tpsreg.GUI as gui_module
+
+        image, points = self._images()
+        stack = np.repeat(image[None, ...], 3, axis=0)
+
+        opened = []
+        try:
+            opened.append(
+                (
+                    "matched points",
+                    gui_module.MatchedPointsViewer(app, image, image, points, points),
+                )
+            )
+            opened.append(
+                ("2D preview", gui_module.Interactive2DViewer(app, image, image))
+            )
+            opened.append(
+                ("3D preview", gui_module.Interactive3DViewer(app, stack, stack))
+            )
+            for _, viewer in opened:
+                viewer.root.update_idletasks()
+            yield opened
+        finally:
+            for _, viewer in opened:
+                with contextlib.suppress(tk.TclError):
+                    viewer.root.destroy()
+
+    def test_popup_windows_match_the_main_window(self, app, popups):
+        for name, viewer in popups:
+            assert viewer.root["background"] == app.palette.background, (
+                f"the {name} window does not match the main window background"
+            )
+
+    def test_popup_canvases_match_the_palette(self, app, popups):
+        """These were hardcoded to "gray" regardless of theme."""
+        for name, viewer in popups:
+            assert viewer.canvas["background"] == app.palette.canvas, (
+                f"the {name} canvas does not use the palette"
+            )
+
+    def test_popups_inherit_the_palette_object(self, app, popups):
+        for _, viewer in popups:
+            assert viewer.palette is app.palette
+
+    def test_main_window_has_a_palette(self, app):
+        from tpsreg.theme import Palette
+
+        assert isinstance(app.palette, Palette)
+
+    def test_main_window_background_comes_from_the_palette(self, app):
+        assert app["background"] == app.palette.background
+
+    def test_main_canvases_use_the_palette(self, app):
+        for canvas in (app.left_canvas, app.right_canvas):
+            assert canvas["background"] == app.palette.canvas
+
+    def test_palette_matches_the_active_ttk_theme(self, app):
+        """A light palette with the dark ttk theme would look broken."""
+        if app.theme_name.startswith("azure"):
+            assert app.theme_name == app.palette.ttk_theme
 
 
 class TestViewCallbacks:
