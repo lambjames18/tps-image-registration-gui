@@ -161,6 +161,42 @@ class TestPointSet:
             restored.get_points_array(), original.get_points_array()
         )
 
+    def test_move_existing_point_reports_true(self):
+        point_set = PointSet()
+        point_set.add_point(Point(1.0, 2.0, 0))
+        point_set.add_point(Point(3.0, 4.0, 0))
+
+        assert point_set.move_point(0, 1, 30.0, 40.0) is True
+        np.testing.assert_array_equal(
+            point_set.get_points_array(0), [[1.0, 2.0], [30.0, 40.0]]
+        )
+
+    def test_move_keeps_the_point_in_place_in_the_list(self):
+        """Indices are how the two sides stay paired; moving must not reorder."""
+        point_set = PointSet()
+        for x in (1.0, 2.0, 3.0):
+            point_set.add_point(Point(x, 0.0, 0))
+
+        point_set.move_point(0, 0, 99.0, 99.0)
+        np.testing.assert_array_equal(
+            point_set.get_points_array(0), [[99.0, 99.0], [2.0, 0.0], [3.0, 0.0]]
+        )
+
+    def test_move_out_of_range_reports_false(self):
+        point_set = PointSet()
+        point_set.add_point(Point(1.0, 2.0, 0))
+        assert point_set.move_point(0, 99, 5.0, 5.0) is False
+        np.testing.assert_array_equal(point_set.get_points_array(0), [[1.0, 2.0]])
+
+    def test_move_on_a_missing_slice_reports_false(self):
+        assert PointSet().move_point(7, 0, 1.0, 1.0) is False
+
+    def test_a_moved_point_keeps_its_slice(self):
+        point_set = PointSet()
+        point_set.add_point(Point(1.0, 2.0, 3))
+        point_set.move_point(3, 0, 8.0, 9.0)
+        assert point_set.points[3][0].slice_idx == 3
+
 
 class TestPointManager:
     """Paired point management, undo and redo."""
@@ -221,6 +257,166 @@ class TestPointManager:
 
     def test_undo_with_no_history_reports_false(self):
         assert PointManager().undo() is False
+
+
+class TestPointManagerMoves:
+    """Dragging a marker moves one side of a pair."""
+
+    @staticmethod
+    def _manager():
+        manager = PointManager()
+        manager.add_point_pair(Point(1.0, 2.0, 0), Point(3.0, 4.0, 0))
+        manager.add_point_pair(Point(5.0, 6.0, 0), Point(7.0, 8.0, 0))
+        return manager
+
+    def test_moving_a_source_point(self):
+        manager = self._manager()
+        assert manager.move_point("source", 0, 1, 50.0, 60.0) is True
+
+        src, _ = manager.get_point_pairs(0)
+        np.testing.assert_array_equal(src, [[1.0, 2.0], [50.0, 60.0]])
+
+    def test_moving_a_source_point_leaves_its_partner_alone(self):
+        """The two sides are separate features; only the dragged one moves."""
+        manager = self._manager()
+        manager.move_point("source", 0, 1, 50.0, 60.0)
+
+        _, dst = manager.get_point_pairs(0)
+        np.testing.assert_array_equal(dst, [[3.0, 4.0], [7.0, 8.0]])
+
+    def test_moving_a_destination_point(self):
+        manager = self._manager()
+        manager.move_point("destination", 0, 0, 30.0, 40.0)
+
+        src, dst = manager.get_point_pairs(0)
+        np.testing.assert_array_equal(dst, [[30.0, 40.0], [7.0, 8.0]])
+        np.testing.assert_array_equal(src, [[1.0, 2.0], [5.0, 6.0]])
+
+    def test_an_unknown_side_is_rejected(self):
+        with pytest.raises(ValueError, match="Unknown point set"):
+            self._manager().move_point("middle", 0, 0, 1.0, 1.0)
+
+    def test_moving_a_missing_point_reports_false(self):
+        assert self._manager().move_point("source", 0, 99, 1.0, 1.0) is False
+
+    def test_a_failed_move_does_not_consume_an_undo_step(self):
+        manager = self._manager()
+        manager.move_point("source", 0, 99, 1.0, 1.0)
+        manager.undo()
+
+        # The undo should roll back the second add, not a phantom move.
+        src, _ = manager.get_point_pairs(0)
+        assert len(src) == 1
+
+    def test_a_move_can_be_undone(self):
+        manager = self._manager()
+        manager.move_point("source", 0, 1, 50.0, 60.0)
+
+        assert manager.undo() is True
+        src, _ = manager.get_point_pairs(0)
+        np.testing.assert_array_equal(src, [[1.0, 2.0], [5.0, 6.0]])
+
+    def test_an_undone_move_can_be_redone(self):
+        manager = self._manager()
+        manager.move_point("source", 0, 1, 50.0, 60.0)
+        manager.undo()
+
+        assert manager.redo() is True
+        src, _ = manager.get_point_pairs(0)
+        np.testing.assert_array_equal(src, [[1.0, 2.0], [50.0, 60.0]])
+
+    def test_a_drag_is_a_single_undo_step(self):
+        """A drag fires a move per mouse motion; undo must not replay each one.
+
+        Only the first step of a gesture records history, so one undo returns
+        the point to where it started rather than to the previous frame of the
+        drag.
+        """
+        manager = self._manager()
+
+        manager.move_point("source", 0, 1, 10.0, 10.0)  # first step: recorded
+        for step in range(2, 40):
+            manager.move_point(
+                "source", 0, 1, float(step * 10), float(step * 10), record_history=False
+            )
+
+        assert manager.undo() is True
+        src, _ = manager.get_point_pairs(0)
+        np.testing.assert_array_equal(src[1], [5.0, 6.0])
+
+    def test_a_long_drag_does_not_flood_the_history(self):
+        """50 recorded steps would push every earlier edit off the stack."""
+        manager = self._manager()
+        depth_before = len(manager._history)
+
+        manager.move_point("source", 0, 1, 10.0, 10.0)
+        for step in range(200):
+            manager.move_point(
+                "source", 0, 1, float(step), float(step), record_history=False
+            )
+
+        assert len(manager._history) == depth_before + 1
+
+
+class TestUndoRedoAvailability:
+    """Whether the menu entries should be enabled."""
+
+    def test_a_fresh_manager_can_do_neither(self):
+        manager = PointManager()
+        assert manager.can_undo() is False
+        assert manager.can_redo() is False
+
+    def test_after_an_edit_undo_is_available(self):
+        manager = PointManager()
+        manager.add_point_pair(Point(1.0, 2.0, 0), Point(3.0, 4.0, 0))
+        assert manager.can_undo() is True
+        assert manager.can_redo() is False
+
+    def test_after_undoing_redo_is_available(self):
+        manager = PointManager()
+        manager.add_point_pair(Point(1.0, 2.0, 0), Point(3.0, 4.0, 0))
+        manager.undo()
+        assert manager.can_redo() is True
+
+    def test_after_redoing_everything_redo_is_unavailable(self):
+        manager = PointManager()
+        manager.add_point_pair(Point(1.0, 2.0, 0), Point(3.0, 4.0, 0))
+        manager.undo()
+        manager.redo()
+        assert manager.can_redo() is False
+
+    def test_a_new_edit_invalidates_the_redo_branch(self):
+        manager = PointManager()
+        manager.add_point_pair(Point(1.0, 2.0, 0), Point(3.0, 4.0, 0))
+        manager.add_point_pair(Point(5.0, 6.0, 0), Point(7.0, 8.0, 0))
+        manager.undo()
+        assert manager.can_redo() is True
+
+        manager.add_point_pair(Point(9.0, 9.0, 0), Point(9.0, 9.0, 0))
+        assert manager.can_redo() is False
+
+    @pytest.mark.parametrize("edits", range(4))
+    def test_availability_always_agrees_with_what_undo_does(self, edits):
+        """The greyed-out state must never lie about what will happen."""
+        manager = PointManager()
+        for i in range(edits):
+            manager.add_point_pair(Point(float(i), 0.0, 0), Point(float(i), 0.0, 0))
+
+        for _ in range(edits + 2):
+            expected = manager.can_undo()
+            assert manager.undo() is expected
+
+    @pytest.mark.parametrize("edits", range(1, 4))
+    def test_redo_availability_agrees_with_what_redo_does(self, edits):
+        manager = PointManager()
+        for i in range(edits):
+            manager.add_point_pair(Point(float(i), 0.0, 0), Point(float(i), 0.0, 0))
+        while manager.undo():
+            pass
+
+        for _ in range(edits + 2):
+            expected = manager.can_redo()
+            assert manager.redo() is expected
 
     def test_clear_points_for_one_slice(self):
         manager = PointManager()
