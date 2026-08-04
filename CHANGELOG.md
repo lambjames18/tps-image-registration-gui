@@ -153,14 +153,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- The busy indicator never animated. Its animation is driven by a timer
-  callback, and the application pumped only *idle* tasks, which never run
-  timers — measured, the bar's value did not move at all across 600 ms of
-  work, against 561 steps with a real event loop. It also stepped every 1 ms,
-  asking for a thousand redraws a second, and any redraw during an operation
-  stopped it outright because `update_display` unconditionally cleared it.
-  The indicator now nests, so an inner operation cannot stop an outer one,
-  and unbalanced stops cannot drive it negative and swallow the next start.
+- The busy indicator never animated. It was driven by a Tk timer, which only
+  runs while the event loop does — and during a synchronous operation the loop
+  never runs, so the bar sat frozen. It also stepped every 1 ms, asking for a
+  thousand redraws a second, and any redraw during an operation stopped it
+  outright because `update_display` unconditionally cleared it.
+
+  The bar is now stepped by hand wherever the application reports progress,
+  chiefly on a status change, and flushed with `update_idletasks`. It no
+  longer depends on the event loop at all. The indicator nests, so an inner
+  operation cannot stop an outer one, and unbalanced stops cannot drive it
+  negative and swallow the next start.
+
+  Note that a single long call — a large warp, model inference — still blocks
+  between reported points; the bar advances *between* steps, not within one.
 - Every TPS warp was offset by one pixel in both axes. The dense field was
   sampled on a 1-based grid (`linspace(1, width, width)`) while control points
   and queries are 0-based, so a transform fitted to identical point sets moved

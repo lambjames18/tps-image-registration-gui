@@ -30,9 +30,17 @@ SMOOTHING_OFF = "Off"
 SMOOTHING_AUTO = "Automatic"
 SMOOTHING_MANUAL = "Manual..."
 
-#: Milliseconds between progress-bar steps. The old value was 1 ms, which asks
-#: for a thousand redraws a second; 20 is 50 fps and visibly smooth.
-PROGRESS_INTERVAL_MS = 20
+#: How far the busy indicator advances at each reported step.
+#:
+#: The bar is driven by hand rather than by Tk's timer. A timer-driven bar can
+#: only animate while the event loop runs, and during a synchronous operation
+#: it does not run at all -- which is why the bar never moved. Pumping the loop
+#: with ``update()`` would let the timer fire, but ``update()`` processes the
+#: whole event queue including ``<Configure>``, and redrawing sets a canvas
+#: scrollregion, which can generate another ``<Configure>``. Stepping the bar
+#: ourselves and flushing with ``update_idletasks`` has no such feedback path
+#: and behaves the same on every platform.
+PROGRESS_STEP = 4
 
 #: Residual, in pixels, at and below which a point is drawn as "good". Between
 #: this and RESIDUAL_BAD_PX the marker shades from good to bad. Chosen because
@@ -121,10 +129,8 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         #: worse than no report.
         self.point_quality = None
 
-        #: Nesting depth of show_progress, and a re-entrancy guard for the
-        #: event pump. See show_progress.
+        #: Nesting depth of show_progress. See show_progress.
         self._progress_depth = 0
-        self._pumping = False
 
         #: Per-point leave-one-out residuals, refreshed on every point change.
         #: None when there are too few points for them to mean anything.
@@ -2007,10 +2013,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
     def set_status(self, message: str):
         """Update status bar."""
         self.status_label.config(text=message)
-        # Pump rather than update_idletasks: a status change is usually the
-        # only chance the busy indicator gets to advance during a synchronous
-        # operation, and idle tasks alone do not run the timer that drives it.
-        self._pump_events()
+        # A status change is usually the only point during a synchronous
+        # operation at which the indicator can advance, so it drives it.
+        self._tick_progress()
         logger.info(message)
 
     def show_progress(self, show: bool):
@@ -2022,39 +2027,34 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         """
         if show:
             self._progress_depth += 1
-            if self._progress_depth == 1:
-                self.progress_bar.start(PROGRESS_INTERVAL_MS)
         else:
             # Never go negative: some paths call this without a matching
             # start, and a negative depth would swallow the next real one.
             self._progress_depth = max(0, self._progress_depth - 1)
-            if self._progress_depth == 0:
-                self.progress_bar.stop()
 
-        self._pump_events()
+        self._tick_progress()
 
-    def _pump_events(self):
-        """Let Tk run its event loop briefly, so the bar can animate.
+    def _tick_progress(self):
+        """Advance the busy indicator and flush the display.
 
-        The bar is animated by a timer callback, and ``update_idletasks`` --
-        which is what this used to call -- runs *idle* tasks only, never
-        timers. So during any operation the bar sat frozen: measured, its
-        value did not move at all across 600 ms of work with idle-task
-        pumping, against 561 steps with a real event loop.
+        Called wherever the application reaches a point worth reporting --
+        chiefly :meth:`set_status`. Advancing by hand means the bar moves
+        exactly when there is something to report, without depending on an
+        event loop that a synchronous operation never returns to.
 
-        ``update`` processes everything pending, including user input, so it
-        can re-enter a handler. The guard keeps that to one level: a second
-        pump from inside a pump does nothing.
+        ``update_idletasks`` rather than ``update``: the former repaints,
+        while the latter also dispatches input and window events, which can
+        re-enter a handler and, because redrawing sets a canvas scrollregion,
+        feed itself more ``<Configure>`` events.
         """
-        if self._pumping:
-            return
-        self._pumping = True
         try:
-            self.update()
+            if self._progress_depth > 0:
+                self.progress_bar.step(PROGRESS_STEP)
+            else:
+                self.progress_bar["value"] = 0
+            self.update_idletasks()
         except tk.TclError:  # pragma: no cover - window already torn down
-            logger.debug("Could not pump the event loop", exc_info=True)
-        finally:
-            self._pumping = False
+            logger.debug("Could not update the busy indicator", exc_info=True)
 
     def _get_image_resolutions_dialog(self) -> tuple:
         """Show dialog to select transformation type."""

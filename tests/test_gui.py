@@ -1006,19 +1006,28 @@ class TestProgressIndicator:
         assert app._progress_depth == 1
         app.show_progress(False)
 
-    def test_the_pump_does_not_recurse(self, app):
-        """update() runs pending events, which can re-enter a handler."""
-        app._pumping = True
-        try:
-            app._pump_events()  # must return without recursing
-        finally:
-            app._pumping = False
+    def test_it_never_dispatches_input_events(self, app):
+        """Only idle tasks, so a redraw cannot feed itself more events.
 
-    def test_a_sane_step_interval(self):
-        """1 ms asked for a thousand redraws a second."""
+        The first attempt at this fix called update(), which dispatches
+        <Configure> as well; redrawing sets a canvas scrollregion, which can
+        generate another <Configure>. Stepping the bar by hand and flushing
+        with update_idletasks has no such path.
+        """
+        import inspect
+
         import tpsreg.GUI as gui_module
 
-        assert 10 <= gui_module.PROGRESS_INTERVAL_MS <= 100
+        source = inspect.getsource(
+            gui_module.ModernDistortionCorrectionView._tick_progress
+        )
+        assert "update_idletasks" in source
+        assert "self.update()" not in source
+
+    def test_a_visible_step_size(self):
+        import tpsreg.GUI as gui_module
+
+        assert 1 <= gui_module.PROGRESS_STEP <= 25
 
 
 class TestLiveResiduals:
