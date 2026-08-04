@@ -751,7 +751,7 @@ class PointAutoIdentifier:
         destination_image: np.ndarray,
         checkpoint_path: str | None = None,
         **kwargs,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Detect matching points between images using ROMA (MatchAnything).
 
         Args:

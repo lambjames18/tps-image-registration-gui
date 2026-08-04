@@ -9,7 +9,7 @@ from kornia.utils import create_meshgrid
 from .geometry import warp_kpts, homo_warp_kpts, homo_warp_kpts_glue, homo_warp_kpts_with_mask, homo_warp_kpts_with_mask_f, homo_warp_kpts_glue_with_mask, homo_warp_kpts_glue_with_mask_f, warp_kpts_by_sparse_gt_matches_fast, warp_kpts_by_sparse_gt_matches_fine_chunks
 
 from kornia.geometry.subpix import dsnt
-from kornia.utils.grid import create_meshgrid
+from kornia.geometry.grid import create_meshgrid
 
 def static_vars(**kwargs):
     def decorate(func):

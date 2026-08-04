@@ -84,14 +84,6 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a python -m pytest tests/ -v -m gui
 
-      - name: Run GUI tests
-        if: runner.os != 'Linux'
-        run: python -m pytest tests/ -v -m gui
-
-      - name: Run GUI tests (Linux, under Xvfb)
-        if: runner.os == 'Linux'
-        run: xvfb-run -a python -m pytest tests/ -v -m gui
-
       # One reference run feeds the README badges. Ubuntu 3.12 is the job with
       # Tk installed, so its numbers are the most representative.
       - name: Upload coverage and test reports
