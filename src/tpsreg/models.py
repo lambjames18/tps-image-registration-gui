@@ -883,6 +883,9 @@ class PointAutoIdentifier:
             logger.error(
                 "Please download weights from: https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view"
             )
+            import traceback
+
+            logger.error(traceback.format_exc())
             return np.array([]), np.array([])
         except Exception as e:
             logger.error("Matchanything point detection failed: %s", e)
@@ -1120,7 +1123,8 @@ class ImageLoader:
         path: Path, modality_name: str = "Intensity"
     ) -> tuple[dict[str, np.ndarray], None]:
         """Load standard image formats with optional modality name."""
-        im = io.imread(path, as_gray=True).astype(np.float32)
+        im = io.imread(path).astype(np.float32)
+        # im = io.imread(path, as_gray=True).astype(np.float32)
 
         # Normalize to 0-255. A constant image (blank slice, saturated
         # detector) has zero range and would otherwise become NaN.
