@@ -188,6 +188,25 @@ preview offers three ways to compare:
 
 ![Correction preview](./docs/images/GUI-preview.jpg)
 
+*Check registration quality* fits a transform and reports how good the
+correspondences look. Worth knowing about what it does **not** do: it does not
+report how far the fit lands from each control point, because a thin-plate
+spline interpolates — it passes exactly through every point it was given, so
+that number is around 1e-12 whether the points are good or badly wrong.
+
+| Measure | What it tells you |
+| --- | --- |
+| Leave-one-out residual | Refits without each point and measures how far the fit misses it. This is where a mistyped correspondence shows up. Flagged points are drawn with a larger warning-coloured ring so you can find them. |
+| Jacobian determinant | Goes negative where the mapping folds over itself, producing mirrored patches. Invisible to any per-point measure, since the points on either side of a fold are still matched exactly. |
+| Bending energy | How far the warp is from a plain affine. Zero for a pure affine, growing as the deformation gets more local. |
+| Coverage | Fraction of the image the points enclose. Everything outside is extrapolated. |
+
+Leave-one-out needs roughly nine well-spread points to mean anything: it asks
+the remaining points to predict the held-out one, and with only a handful that
+question has no good answer for any of them. The check refits once per control
+point, so it is on a menu rather than running as you click — about 15 ms at 50
+points, 0.3 s at 200.
+
 *View matched points* shows both images side by side with lines joining matched
 points, which makes bad correspondences obvious.
 

@@ -37,6 +37,10 @@ class Palette:
     muted_foreground:
         Secondary text such as hints and tooltips. Chosen to stay legible
         against ``background``, which plain "gray" is not on a dark theme.
+    warning:
+        Draws attention to something the user should look at, such as a
+        control point the quality check flagged. Must read as "look here"
+        against ``canvas`` without being mistaken for ``success``.
     """
 
     name: str
@@ -46,6 +50,7 @@ class Palette:
     success: str
     canvas: str
     muted_foreground: str
+    warning: str
 
     @property
     def ttk_theme(self) -> str:
@@ -61,6 +66,7 @@ DARK = Palette(
     success="#00bb00",
     canvas="#333333",
     muted_foreground="#9a9a9a",
+    warning="#ff8c1a",
 )
 
 LIGHT = Palette(
@@ -71,6 +77,7 @@ LIGHT = Palette(
     success="#00bb00",
     canvas="#ffffff",
     muted_foreground="#666666",
+    warning="#d35400",
 )
 
 PALETTES: dict[str, Palette] = {DARK.name: DARK, LIGHT.name: LIGHT}

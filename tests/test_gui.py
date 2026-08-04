@@ -802,6 +802,95 @@ class TestPreviewComparisonModes:
         assert viewer.canvas["background"] == app.palette.canvas
 
 
+class TestQualityFlagging:
+    """Findability: a flagged point has to stand out on the canvas."""
+
+    @pytest.fixture
+    def flagged(self, with_images):
+        """The window with a quality report that flags one point."""
+        from tpsreg import metrics
+
+        axis = np.linspace(4.0, 40.0, 4)
+        grid = np.stack(np.meshgrid(axis, axis), -1).reshape(-1, 2)
+        src = grid.copy()
+        src[6] = src[6] + np.array([18.0, -14.0])
+
+        for (sx, sy), (dx, dy) in zip(src, grid, strict=True):
+            with_images.presenter.add_point("source", int(sx), int(sy))
+            with_images.presenter.add_point("destination", int(dx), int(dy))
+
+        quality = with_images.presenter.assess_transform()
+        assert quality is not None and quality.outliers.any()
+        assert isinstance(quality, metrics.TransformQuality)
+
+        with_images.point_quality = quality
+        with_images.update_display()
+        return with_images, quality
+
+    def test_the_flagged_point_is_drawn_differently(self, flagged):
+        app, quality = flagged
+        worst = quality.worst_point
+
+        assert app._is_flagged(worst)
+        assert not app._is_flagged(int(np.flatnonzero(~quality.outliers)[0]))
+
+    def test_flagged_markers_use_the_warning_colour(self, flagged):
+        app, quality = flagged
+        worst = quality.worst_point
+
+        outlines = {
+            app.left_canvas.itemcget(item, "outline")
+            for item in app.left_canvas.find_withtag(f"point_{worst}")
+            if app.left_canvas.type(item) == "oval"
+        }
+        assert app.palette.warning in outlines
+
+    def test_ordinary_markers_keep_their_colour(self, flagged):
+        app, quality = flagged
+        ordinary = int(np.flatnonzero(~quality.outliers)[0])
+
+        outlines = {
+            app.left_canvas.itemcget(item, "outline")
+            for item in app.left_canvas.find_withtag(f"point_{ordinary}")
+            if app.left_canvas.type(item) == "oval"
+        }
+        assert app.palette.warning not in outlines
+
+    def test_the_report_goes_stale_when_the_points_change(self, flagged):
+        """A report about a different point set is worse than no report."""
+        app, _ = flagged
+        assert app.point_quality is not None
+
+        app.presenter.add_point("source", 30, 30)
+        assert app.point_quality is None
+
+    def test_a_new_project_clears_the_report(self, flagged):
+        app, _ = flagged
+        app.presenter.new_project()
+        assert app.point_quality is None
+
+    def test_nothing_is_flagged_without_a_report(self, with_images):
+        with_images.point_quality = None
+        assert not with_images._is_flagged(0)
+
+    def test_the_report_reads_as_prose(self, flagged):
+        app, quality = flagged
+        report = app._quality_report(quality).lower()
+        assert "leave-one-out" in report
+        assert str(quality.worst_point) in report
+
+    def test_a_clean_report_says_so(self, with_images):
+        axis = np.linspace(4.0, 40.0, 4)
+        grid = np.stack(np.meshgrid(axis, axis), -1).reshape(-1, 2)
+        for x, y in grid:
+            with_images.presenter.add_point("source", int(x), int(y))
+            with_images.presenter.add_point("destination", int(x), int(y))
+
+        report = with_images._quality_report(with_images.presenter.assess_transform())
+        assert "No point disagrees" in report
+        assert "does not fold" in report
+
+
 class TestLoadingThroughTheRealView:
     """Driving the real window with real files."""
 

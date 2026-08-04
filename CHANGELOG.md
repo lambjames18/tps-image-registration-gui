@@ -6,6 +6,69 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Registration quality metrics (`tpsreg.metrics`), reachable from
+  **View → Check registration quality**.
+
+  The obvious check — how far the fit lands from each control point — says
+  nothing about a thin-plate spline. It interpolates, so residuals come out
+  around 1e-12 whether the correspondences are good or catastrophically
+  wrong; a point clicked 40 px from its true partner is indistinguishable
+  from a perfect one. What the report gives instead:
+
+  - **Leave-one-out residuals.** Refit without each point and see how far the
+    fit misses it, which is where a bad correspondence does show up. Points
+    that disagree with the rest are flagged and drawn with a larger
+    warning-coloured ring, so a number in a report can be found on a canvas
+    holding several dozen points. Needs roughly nine well-spread points to be
+    meaningful — below that the sparsity swamps the signal, which is
+    documented and tested rather than left to be discovered.
+  - **Jacobian determinant.** Negative where the mapping folds over itself,
+    producing mirrored patches in the warp. This failure is invisible to any
+    per-point measure, because the control points on either side of a fold
+    are still matched exactly.
+  - **Bending energy**, coverage, and a one-line summary for the status bar.
+
+  The report is discarded whenever the points change, since a report about a
+  different point set is worse than none.
+- `ThinPlateSplineTransform.map` evaluates the spline directly at arbitrary
+  coordinates, in double precision, with no grid involved. Mapping 40 points
+  went from 66 s and 134 MB to 1 ms and 0.07 MB, because `transform_coords`
+  used to build the whole dense field and then index it.
+- `ThinPlateSplineTransform.build_field`, `set_field`, `clear_field`, `field`,
+  and `field_step`: the dense field as a cache, at a chosen resolution. A
+  quarter-resolution field costs a few hundredths of a pixel for a sixteenth
+  of the memory, and the error falls away quadratically as it gets finer.
+- `tpsreg.warping.warp`, which warps large outputs a tile at a time.
+  `skimage.transform.warp` builds one coordinate array for the entire output,
+  16 bytes per pixel — 6.4 GB for a 400 Mpx image before any pixels are read.
+  Tiling bounds that by the tile, and turns out to be faster as well.
+- `tpsreg.warping.interpolate_fields`, for blending two displacement fields.
+- Drag a control point to adjust it. Correcting a click that landed slightly
+  off previously meant deleting the pair and re-placing both halves. The whole
+  drag is one undo step, and only the marker being dragged moves.
+- Control points are checked before a transform is estimated. Problems that
+  make the fit impossible — too few points, coincident points, points all on
+  one line, a half-finished pair — are reported by name and block estimation;
+  problems that only degrade the result, such as points clustered in one part
+  of the image, warn and can be dismissed. New `tpsreg.validation` module,
+  with tests pinning what it calls an error to what the solver actually
+  refuses.
+- "Link views" checkbox: zooming or scrolling either panel does the same to
+  the other, so a feature stays in the same place in both.
+- Checkerboard and difference comparison modes in the 2D preview, alongside the
+  existing wipe. New `tpsreg.overlays` module holds the compositing, so it can
+  be tested without a display.
+- File dialogs remember the folder the last one used, instead of starting from
+  the working directory every time.
+- A `warning` colour in both palettes, for drawing attention to a flagged
+  control point.
+- `PointManager.move_point`, `PointSet.move_point`, `PointManager.can_undo`,
+  `PointManager.can_redo`, and the presenter methods that wrap them
+  (`move_point`, `commit_point_move`, `find_point_near`, `check_points`,
+  `assess_transform`, `can_undo`, `can_redo`).
+
 ### Changed
 
 - **Breaking:** a `ThinPlateSplineTransform` is now its fitted coefficients
@@ -28,21 +91,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   to different control points, so their coefficients cannot be blended, but
   their fields share a grid and can. That path now says so explicitly and
   takes a `downsample` argument.
-
-### Added
-
-- `ThinPlateSplineTransform.map` evaluates the spline directly at arbitrary
-  coordinates, in double precision, with no grid involved. Mapping 40 points
-  went from 66 s and 134 MB to 1 ms and 0.07 MB, because `transform_coords`
-  used to build the whole dense field and then index it.
-- `ThinPlateSplineTransform.build_field`, `set_field`, `clear_field`, `field`,
-  and `field_step`: the cache, at a chosen resolution. A quarter-resolution
-  field costs about 0.004 px of accuracy for a sixteenth of the memory.
-- `tpsreg.warping.warp`, which warps large outputs a tile at a time.
-  `skimage.transform.warp` builds one coordinate array for the entire output,
-  16 bytes per pixel — 6.4 GB for a 400 Mpx image before any pixels are read.
-  Tiling bounds that by the tile, and turns out to be faster as well.
-- `tpsreg.warping.interpolate_fields`, for blending two displacement fields.
+- Undo and Redo are greyed out when there is nothing to undo or redo, rather
+  than being permanently enabled and silently doing nothing.
+- Control points are placed on mouse release rather than press, so that a press
+  landing on an existing marker can start a drag instead. A press that grabs a
+  marker and releases without moving leaves it alone, so a slightly misjudged
+  click near a point no longer stacks a second one on top of it.
 
 ### Fixed
 
@@ -55,31 +109,6 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   behaviour rather than questioning it.
 - Coordinates were truncated to whole pixels before lookup, so sub-pixel
   warping was impossible no matter what interpolation order was requested.
-
-- Drag a control point to adjust it. Correcting a click that landed slightly
-  off previously meant deleting the pair and re-placing both halves. The whole
-  drag is one undo step, and only the marker being dragged moves.
-- Control points are checked before a transform is estimated. Problems that
-  make the fit impossible — too few points, coincident points, points all on
-  one line, a half-finished pair — are reported by name and block estimation;
-  problems that only degrade the result, such as points clustered in one part
-  of the image, warn and can be dismissed. New `tpsreg.validation` module,
-  with tests pinning what it calls an error to what the solver actually
-  refuses.
-- "Link views" checkbox: zooming or scrolling either panel does the same to
-  the other, so a feature stays in the same place in both.
-- Checkerboard and difference comparison modes in the 2D preview, alongside the
-  existing wipe. New `tpsreg.overlays` module holds the compositing, so it can
-  be tested without a display.
-- File dialogs remember the folder the last one used, instead of starting from
-  the working directory every time.
-- `PointManager.move_point`, `PointSet.move_point`, `PointManager.can_undo`,
-  `PointManager.can_redo`, and the presenter methods that wrap them
-  (`move_point`, `commit_point_move`, `find_point_near`, `check_points`,
-  `can_undo`, `can_redo`).
-
-### Fixed
-
 - Collinear control points produced a garbage transform instead of an error on
   Linux and Windows. The solver relied on `np.linalg.solve` raising
   `LinAlgError` for a singular system, and whether it does depends on the
@@ -94,15 +123,6 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   screen pixel of every image cell reported the next cell along. The cursor
   readout shared the bug and now uses the same conversion as the click, so the
   two can no longer disagree.
-
-### Changed
-
-- Undo and Redo are greyed out when there is nothing to undo or redo, rather
-  than being permanently enabled and silently doing nothing.
-- Control points are placed on mouse release rather than press, so that a press
-  landing on an existing marker can start a drag instead. A press that grabs a
-  marker and releases without moving leaves it alone, so a slightly misjudged
-  click near a point no longer stacks a second one on top of it.
 
 ## [0.2.0] - 2026-08-03
 
