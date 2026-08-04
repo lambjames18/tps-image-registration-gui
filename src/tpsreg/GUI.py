@@ -20,6 +20,7 @@ from PIL import Image, ImageTk
 from tpsreg import __version__
 from tpsreg.presenter import ApplicationPresenter, CropMode, DataFormat, TransformType
 from tpsreg.resources_util import apply_window_icon, theme_path
+from tpsreg.theme import apply_to_window, get_palette, palette_of
 
 logger = logging.getLogger(__name__)
 
@@ -108,18 +109,15 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         The colours are applied either way, so a theme that refuses to load
         degrades the look rather than preventing the application from starting.
         """
-        if style == "dark":
-            self.bg = "#333333"
-            self.fg = "#ffffff"
-            self.hl = "#229fff"
-            self.hl2 = "#00bb00"
-        elif style == "light":
-            self.bg = "#ffffff"
-            self.fg = "#000000"
-            self.hl = "#007fff"
-            self.hl2 = "#00bb00"
-        else:
-            raise ValueError(f"Unknown style: {style!r}. Expected 'dark' or 'light'.")
+        # get_palette raises on an unknown style, which is the check that used
+        # to live here.
+        self.palette = get_palette(style)
+
+        # Short aliases kept for the existing widget construction below.
+        self.bg = self.palette.background
+        self.fg = self.palette.foreground
+        self.hl = self.palette.accent
+        self.hl2 = self.palette.success
 
         s = ttk.Style(self)
         self.theme_name = self._load_azure_theme(s, style)
@@ -1473,6 +1471,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
     def _get_image_resolutions_dialog(self) -> tuple:
         """Show dialog to select transformation type."""
         dialog = tk.Toplevel(self)
+        apply_to_window(dialog, self.palette)
         dialog.title("Enter Resolution (µm)")
         dialog.geometry("250x100")
         dialog.transient(self)
@@ -1523,7 +1522,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.transient(self)
         dialog.grab_set()
         # Set background to match main window
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         selected = tk.StringVar(value="TPS")
 
@@ -1565,7 +1564,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.transient(self)
         dialog.grab_set()
         # Set background to match main window
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         selected = tk.StringVar(value="none")
 
@@ -1616,7 +1615,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.transient(self)
         dialog.grab_set()
         # Set background to match main window
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         selected_format = tk.StringVar(value=DataFormat.IMAGE.value)
 
@@ -1658,7 +1657,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.geometry("350x150")
         dialog.transient(self)
         dialog.grab_set()
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         # Main frame
         main_frame = ttk.Frame(dialog, padding="10")
@@ -1712,7 +1711,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.geometry("300x180")
         dialog.transient(self)
         dialog.grab_set()
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         # Main frame
         main_frame = ttk.Frame(dialog, padding="10")
@@ -1770,7 +1769,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.title(f"Auto Detection Parameters ({method.upper()})")
         dialog.transient(self)
         dialog.grab_set()
-        dialog.config(bg=self.bg)
+        apply_to_window(dialog, self.palette)
 
         # Main frame
         main_frame = ttk.Frame(dialog, padding="10")
@@ -1841,7 +1840,9 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             entries[key] = var
 
             # Tooltip label
-            tip_lbl = ttk.Label(row_frame, text=tooltip, foreground="gray")
+            tip_lbl = ttk.Label(
+                row_frame, text=tooltip, foreground=self.palette.muted_foreground
+            )
             tip_lbl.pack(side="left", padx=(10, 0))
 
         # RANSAC filter checkbox (for matchanything only)
@@ -1934,6 +1935,9 @@ class MatchedPointsViewer:
             Window title
         """
         self.master = master
+        # Popups are separate Toplevels: ttk styling reaches ttk widgets
+        # but not the window itself or plain Tk widgets like the canvas.
+        self.palette = palette_of(master)
         self.src_img = self._normalize_image(src_img)
         self.dst_img = self._normalize_image(dst_img)
         self.src_points = src_points
@@ -1983,6 +1987,7 @@ class MatchedPointsViewer:
         """Setup the tkinter GUI"""
         # Create main window
         self.root = tk.Toplevel(self.master)
+        apply_to_window(self.root, self.palette)
         self.root.title(self.title)
         width, height = self._get_window_size()
         self.root.geometry(f"{width}x{height}")
@@ -1998,7 +2003,7 @@ class MatchedPointsViewer:
         main_frame.rowconfigure(0, weight=1)
 
         # Create canvas for display
-        self.canvas = tk.Canvas(main_frame, bg="gray")
+        self.canvas = tk.Canvas(main_frame, bg=self.palette.canvas)
         self.canvas.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         # Info frame
@@ -2166,6 +2171,9 @@ class Interactive3DViewer:
         stack0, stack1 = self._prepare_stacks(stack0, stack1)
 
         self.master = master
+        # Popups are separate Toplevels: ttk styling reaches ttk widgets
+        # but not the window itself or plain Tk widgets like the canvas.
+        self.palette = palette_of(master)
         self.stack0 = stack0
         self.stack1 = stack1
         self.title = title
@@ -2278,6 +2286,7 @@ class Interactive3DViewer:
         """Setup the tkinter GUI"""
         # Create main window
         self.root = tk.Toplevel(self.master)
+        apply_to_window(self.root, self.palette)
         self.root.title(self.title)
         width, height = self._get_window_size()
         self.root.geometry(f"{width}x{height}")
@@ -2293,7 +2302,7 @@ class Interactive3DViewer:
         main_frame.rowconfigure(0, weight=1)
 
         # Create canvas for image display
-        self.canvas = tk.Canvas(main_frame, bg="gray")
+        self.canvas = tk.Canvas(main_frame, bg=self.palette.canvas)
         self.canvas.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         # Left controls (row split slider)
@@ -2510,6 +2519,9 @@ class Interactive2DViewer:
             Window title
         """
         self.master = master
+        # Popups are separate Toplevels: ttk styling reaches ttk widgets
+        # but not the window itself or plain Tk widgets like the canvas.
+        self.palette = palette_of(master)
         self.im0_original = self._normalize_image(im0)
         self.im1_original = self._normalize_image(im1)
         self.title = title
@@ -2566,6 +2578,7 @@ class Interactive2DViewer:
         """Setup the tkinter GUI"""
         # Create main window
         self.root = tk.Toplevel(self.master)
+        apply_to_window(self.root, self.palette)
         self.root.title(self.title)
         width, height = self._get_window_size()
         self.root.geometry(f"{width}x{height}")
@@ -2581,7 +2594,7 @@ class Interactive2DViewer:
         main_frame.rowconfigure(0, weight=1)
 
         # Create canvas for image display
-        self.canvas = tk.Canvas(main_frame, bg="gray")
+        self.canvas = tk.Canvas(main_frame, bg=self.palette.canvas)
         self.canvas.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         # Create vertical slider (Y position)
