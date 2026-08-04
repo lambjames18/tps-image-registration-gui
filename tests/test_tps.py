@@ -64,19 +64,55 @@ class TestEstimation:
         assert tform.estimate(square_grid_points, square_grid_points, (100, 100))
         assert tform._estimated
         assert tform.size == (100, 100)
-        assert tform.params.shape == (2, 100, 100)
+
+        # The transform is its coefficients: K weights plus three affine terms.
+        assert tform.params.shape == (len(square_grid_points) + 3, 2)
+        assert tform.control_points.shape == square_grid_points.shape
+
+    def test_fitting_does_not_build_a_field(self, square_grid_points):
+        """The dense field is a cache, and nothing asked for it yet.
+
+        Building it up front is what made the cost of a fit scale with the
+        image instead of with the control points.
+        """
+        tform = ThinPlateSplineTransform()
+        tform.estimate(square_grid_points, square_grid_points, (100, 100))
+        assert tform.field is None
+
+    def test_coefficients_are_small_whatever_the_grid(self, square_grid_points):
+        """A 400 Mpx destination used to mean a 3.2 GB transform."""
+        small = ThinPlateSplineTransform()
+        small.estimate(square_grid_points, square_grid_points, (100, 100))
+
+        huge = ThinPlateSplineTransform()
+        huge.estimate(square_grid_points, square_grid_points, (20_000, 20_000))
+
+        assert huge.params.shape == small.params.shape
+        assert huge.params.nbytes < 1024
+        np.testing.assert_allclose(huge.params, small.params)
 
     def test_identity_maps_points_to_themselves(self, square_grid_points):
-        """A spline fitted to identical point sets is the identity."""
+        """A spline fitted to identical point sets is the identity.
+
+        It used to be the identity plus one pixel in each axis: the field was
+        sampled on a 1-based grid while control points and queries are
+        0-based, so every warp carried a systematic one-pixel bias. The
+        previous version of this test asserted the offset rather than
+        questioning it.
+        """
         tform = ThinPlateSplineTransform()
         tform.estimate(square_grid_points, square_grid_points, (100, 100))
 
-        query = np.array([[20, 30], [50, 50], [70, 80]])
-        result = tform(query)
+        query = np.array([[20, 30], [50, 50], [70, 80]], dtype=float)
+        np.testing.assert_allclose(tform(query), query, atol=1e-6)
 
-        # params is built on a 1-based grid, so a query at index i returns the
-        # coordinate i+1; the mapping is the identity up to that offset.
-        np.testing.assert_allclose(result, query + 1, atol=1e-3)
+    def test_identity_is_exact_at_fractional_coordinates(self, square_grid_points):
+        """Queries are no longer truncated to whole pixels before lookup."""
+        tform = ThinPlateSplineTransform()
+        tform.estimate(square_grid_points, square_grid_points, (100, 100))
+
+        query = np.array([[20.25, 30.75], [49.5, 50.5]])
+        np.testing.assert_allclose(tform(query), query, atol=1e-6)
 
     def test_pure_translation_recovered(self, square_grid_points):
         """Fitting a known translation reproduces it across the grid."""
@@ -87,9 +123,8 @@ class TestEstimation:
         tform = ThinPlateSplineTransform()
         tform.estimate(src, dst, (100, 100))
 
-        query = np.array([[25, 25], [60, 40]])
-        result = tform(query)
-        np.testing.assert_allclose(result, query + 1 + shift, atol=1e-2)
+        query = np.array([[25, 25], [60, 40]], dtype=float)
+        np.testing.assert_allclose(tform(query), query + shift, atol=1e-6)
 
     def test_affine_only_ignores_bending(self, square_grid_points, rng):
         """affine_only drops the non-linear term, so the two differ on a warp."""
@@ -102,8 +137,13 @@ class TestEstimation:
         affine = ThinPlateSplineTransform(affine_only=True)
         affine.estimate(src, dst, (100, 100))
 
-        assert full.params.shape == affine.params.shape
-        assert not np.allclose(full.params, affine.params)
+        # affine_only is an evaluation flag, not a fitting one: the same
+        # system is solved either way, and the bending term is simply not
+        # applied. So the coefficients match and only the mapping differs.
+        np.testing.assert_allclose(full.params, affine.params)
+
+        query = np.array([[25.0, 25.0], [60.0, 40.0], [80.0, 70.0]])
+        assert not np.allclose(full(query), affine(query))
 
     def test_collinear_points_raise_clear_error(self):
         """A degenerate system should explain itself, not leak LinAlgError."""
@@ -114,10 +154,11 @@ class TestEstimation:
             tform.estimate(src, dst, (10, 10))
 
     def test_non_square_output_shape(self, square_grid_points):
-        """The grid is indexed (height, width); a non-square size proves it."""
+        """The field is indexed (height, width); a non-square size proves it."""
         tform = ThinPlateSplineTransform()
         tform.estimate(square_grid_points, square_grid_points, (40, 90))
-        assert tform.params.shape == (2, 40, 90)
+        assert tform.size == (40, 90)
+        assert tform.build_field().shape == (2, 40, 90)
 
     def test_out_of_range_coordinates_are_clamped(self, square_grid_points):
         """warp() queries the full output grid; queries must not IndexError."""
@@ -129,12 +170,17 @@ class TestEstimation:
         assert np.all(np.isfinite(result))
 
     def test_progress_callback_reports_every_chunk(self, square_grid_points):
+        """Progress is reported while building a field, the only slow part.
+
+        A fit on its own is milliseconds and has nothing to report.
+        """
         seen = []
         tform = ThinPlateSplineTransform(chunk_size=1000)
         tform.estimate(
             square_grid_points,
             square_grid_points,
             (100, 100),
+            build_field=True,
             progress_callback=lambda done, total: seen.append((done, total)),
         )
 
@@ -142,10 +188,10 @@ class TestEstimation:
         assert seen[-1][0] == seen[-1][1], "final call should report completion"
         assert [done for done, _ in seen] == list(range(1, len(seen) + 1))
 
-    def test_affine_only_skips_progress_callback(self, square_grid_points):
-        """There is no bending pass to report on when affine_only is set."""
+    def test_fitting_alone_reports_no_progress(self, square_grid_points):
+        """Nothing to report when no field is being built."""
         seen = []
-        tform = ThinPlateSplineTransform(affine_only=True)
+        tform = ThinPlateSplineTransform()
         tform.estimate(
             square_grid_points,
             square_grid_points,
@@ -160,12 +206,13 @@ class TestEstimation:
         src = square_grid_points + rng.normal(0, 2, square_grid_points.shape)
 
         one_chunk = ThinPlateSplineTransform(chunk_size=10_000)
-        one_chunk.estimate(src, dst, (50, 50))
+        one_chunk.estimate(src, dst, (50, 50), build_field=True)
 
         many_chunks = ThinPlateSplineTransform(chunk_size=1000)
-        many_chunks.estimate(src, dst, (50, 50))
+        many_chunks.estimate(src, dst, (50, 50), build_field=True)
 
         np.testing.assert_allclose(one_chunk.params, many_chunks.params, rtol=1e-5)
+        np.testing.assert_allclose(one_chunk.field, many_chunks.field, rtol=1e-5)
 
 
 class TestChunkSizeEstimation:
@@ -211,3 +258,222 @@ class TestSystemMatrix:
         np.testing.assert_array_equal(L[:k, k + 1 : k + 3], square_grid_points)
         np.testing.assert_array_equal(L[k, :k], np.ones(k))
         np.testing.assert_array_equal(L[k + 1 :, :k], square_grid_points.T)
+
+
+class TestDirectMapping:
+    """Evaluating the spline without building a grid."""
+
+    @pytest.fixture
+    def deformable(self, square_grid_points, rng):
+        """A fit with genuine local distortion, not just an affine."""
+        dst = square_grid_points
+        src = square_grid_points + rng.normal(0, 5, square_grid_points.shape)
+        tform = ThinPlateSplineTransform()
+        tform.estimate(src, dst, (100, 100))
+        return tform
+
+    def test_map_returns_one_point_per_input(self, deformable):
+        query = np.array([[10.0, 20.0], [30.0, 40.0], [55.0, 15.0]])
+        assert deformable.map(query).shape == query.shape
+
+    def test_map_reproduces_the_control_points(self, square_grid_points, rng):
+        """The spline interpolates: it must hit its own control points."""
+        dst = square_grid_points
+        src = square_grid_points + rng.normal(0, 5, square_grid_points.shape)
+
+        tform = ThinPlateSplineTransform()
+        tform.estimate(src, dst, (100, 100))
+
+        np.testing.assert_allclose(tform.map(dst), src, atol=1e-6)
+
+    def test_mapping_needs_no_grid_size(self, square_grid_points):
+        """size is advisory now; mapping works without one."""
+        tform = ThinPlateSplineTransform()
+        tform.estimate(square_grid_points, square_grid_points)
+
+        assert tform.size is None
+        query = np.array([[12.0, 34.0]])
+        np.testing.assert_allclose(tform.map(query), query, atol=1e-6)
+
+    def test_mapping_is_independent_of_the_recorded_size(self, square_grid_points, rng):
+        """A coordinate maps the same however big the grid is said to be."""
+        dst = square_grid_points
+        src = square_grid_points + rng.normal(0, 4, square_grid_points.shape)
+        query = np.array([[25.0, 35.0], [70.0, 60.0]])
+
+        small = ThinPlateSplineTransform()
+        small.estimate(src, dst, (100, 100))
+        huge = ThinPlateSplineTransform()
+        huge.estimate(src, dst, (50_000, 50_000))
+
+        np.testing.assert_allclose(small.map(query), huge.map(query))
+
+    def test_chunking_does_not_change_the_mapping(self, deformable, rng):
+        """Chunk size is a memory knob for mapping too."""
+        query = rng.uniform(0, 99, size=(5000, 2))
+
+        one_chunk = deformable.map(query, available_memory_gb=64.0)
+        deformable.chunk_size = 97
+        many_chunks = deformable.map(query)
+
+        np.testing.assert_allclose(one_chunk, many_chunks)
+
+    def test_map_rejects_the_wrong_shape(self, deformable):
+        with pytest.raises(ValueError, match=r"\(N, 2\)"):
+            deformable.map(np.array([1.0, 2.0, 3.0]))
+
+    def test_map_before_estimate_raises(self):
+        with pytest.raises(ValueError, match="not estimated"):
+            ThinPlateSplineTransform().map(np.array([[0.0, 0.0]]))
+
+    def test_an_empty_query_is_survivable(self, deformable):
+        assert deformable.map(np.empty((0, 2))).shape == (0, 2)
+
+
+class TestFieldCache:
+    """The dense field, which is now optional and resolution-configurable."""
+
+    @pytest.fixture
+    def deformable(self, square_grid_points, rng):
+        dst = square_grid_points
+        src = square_grid_points + rng.normal(0, 5, square_grid_points.shape)
+        tform = ThinPlateSplineTransform()
+        tform.estimate(src, dst, (100, 100))
+        return tform
+
+    def test_a_full_field_is_exact_on_its_own_samples(self, deformable):
+        """Where the field was evaluated, it holds the exact answer."""
+        rows, cols = np.meshgrid(np.arange(0, 100, 7.0), np.arange(0, 100, 9.0))
+        query = np.column_stack([cols.ravel(), rows.ravel()])
+
+        deformable.build_field((100, 100))
+        np.testing.assert_allclose(deformable(query), deformable.map(query), atol=1e-4)
+
+    def test_a_full_field_interpolates_between_its_samples(self, deformable, rng):
+        """A cache is not free even at full resolution.
+
+        Between samples the field is interpolated, so a fractional query is
+        close but not exact. Callers that need exactness should use map().
+        """
+        query = rng.uniform(0, 99, size=(500, 2))
+        exact = deformable.map(query)
+
+        deformable.build_field((100, 100))
+        error = np.linalg.norm(deformable(query) - exact, axis=1)
+        assert 0 < error.mean() < 0.05
+
+    def test_a_coarse_field_stays_well_under_a_pixel(self, deformable, rng):
+        """Sub-pixel accuracy is not needed, so a coarse field is a fair trade.
+
+        These control points sit about 27 px apart on a 100 px grid, which is
+        dense distortion; a real stitched image has its points much further
+        apart relative to the grid and does correspondingly better.
+        """
+        query = rng.uniform(0, 99, size=(500, 2))
+        exact = deformable.map(query)
+
+        deformable.build_field((100, 100), downsample=4)
+        error = np.linalg.norm(deformable(query) - exact, axis=1)
+        assert error.mean() < 0.1
+        assert error.max() < 0.6
+
+    def test_field_error_falls_away_quadratically(self, deformable, rng):
+        """Bilinear interpolation: halving the step should quarter the error.
+
+        This is the relationship that makes the resolution knob predictable,
+        rather than any single number, which depends on how far apart the
+        control points are.
+        """
+        query = rng.uniform(0, 99, size=(1000, 2))
+        exact = deformable.map(query)
+
+        errors = {}
+        for step in (2, 4, 8):
+            deformable.build_field((100, 100), downsample=step)
+            errors[step] = np.linalg.norm(deformable(query) - exact, axis=1).mean()
+
+        for coarse, fine in ((4, 2), (8, 4)):
+            ratio = errors[coarse] / errors[fine]
+            assert 2.5 < ratio < 6.0, f"1/{coarse} vs 1/{fine} scaled by {ratio:.2f}"
+
+    def test_downsampling_saves_memory(self, deformable):
+        full = deformable.build_field((100, 100)).nbytes
+        coarse = deformable.build_field((100, 100), downsample=4).nbytes
+        assert coarse < full / 8
+
+    def test_the_field_spans_the_whole_grid(self, deformable):
+        """The last sample is pinned to the final pixel, never short of it."""
+        deformable.build_field((100, 90), downsample=7)
+        assert deformable._field_xs[-1] == 89
+        assert deformable._field_ys[-1] == 99
+
+    def test_clearing_the_field_returns_to_direct_evaluation(self, deformable, rng):
+        query = rng.uniform(0, 99, size=(200, 2))
+        deformable.build_field((100, 100), downsample=8)
+        coarse = deformable(query)
+
+        deformable.clear_field()
+        assert deformable.field is None
+        np.testing.assert_allclose(deformable(query), deformable.map(query))
+        assert not np.allclose(coarse, deformable(query), atol=1e-9)
+
+    def test_build_field_needs_a_size_from_somewhere(self, square_grid_points):
+        tform = ThinPlateSplineTransform()
+        tform.estimate(square_grid_points, square_grid_points)
+        with pytest.raises(ValueError, match="No grid size"):
+            tform.build_field()
+
+    def test_build_field_reuses_the_estimated_size(self, deformable):
+        assert deformable.build_field().shape == (2, 100, 100)
+
+    def test_estimate_can_build_the_field_up_front(self, square_grid_points):
+        """The old behaviour, now opt-in."""
+        tform = ThinPlateSplineTransform()
+        tform.estimate(
+            square_grid_points, square_grid_points, (60, 60), build_field=True
+        )
+        assert tform.field.shape == (2, 60, 60)
+
+    def test_queries_beyond_the_grid_are_clamped(self, deformable):
+        """warp() asks about the whole output, which can exceed the field."""
+        deformable.build_field((50, 50))
+        result = deformable(np.array([[999.0, 999.0], [-5.0, -5.0]]))
+        assert result.shape == (2, 2)
+        assert np.all(np.isfinite(result))
+
+
+class TestInstalledFields:
+    """A transform carrying a field but no coefficients."""
+
+    @staticmethod
+    def _field(shape=(2, 20, 30)):
+        rows = np.arange(shape[1], dtype=float)[:, None]
+        cols = np.arange(shape[2], dtype=float)[None, :]
+        return np.stack(
+            [np.broadcast_to(cols, shape[1:]), np.broadcast_to(rows, shape[1:])]
+        )
+
+    def test_a_field_alone_makes_a_usable_transform(self):
+        """Interpolated stack slices have no coefficients of their own."""
+        tform = ThinPlateSplineTransform()
+        tform.set_field(self._field(), size=(20, 30))
+
+        query = np.array([[5.0, 7.0], [12.0, 3.0]])
+        np.testing.assert_allclose(tform(query), query, atol=1e-6)
+
+    def test_a_field_alone_still_has_no_coefficients(self):
+        tform = ThinPlateSplineTransform()
+        tform.set_field(self._field(), size=(20, 30))
+        assert tform.params is None
+        with pytest.raises(ValueError, match="not estimated"):
+            tform.map(np.array([[1.0, 1.0]]))
+
+    def test_a_malformed_field_is_rejected(self):
+        tform = ThinPlateSplineTransform()
+        with pytest.raises(ValueError, match=r"\(2, h, w\)"):
+            tform.set_field(np.zeros((3, 4, 5)))
+
+    def test_the_size_is_inferred_when_not_given(self):
+        tform = ThinPlateSplineTransform()
+        tform.set_field(self._field((2, 20, 30)))
+        assert tform.size == (20, 30)

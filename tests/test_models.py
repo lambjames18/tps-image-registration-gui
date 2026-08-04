@@ -705,7 +705,9 @@ class TestTransformManager:
         manager = TransformManager()
         tform = manager.estimate_transform(points, points, TransformType.TPS, (64, 64))
         assert tform._estimated
-        assert tform.params.shape == (2, 64, 64)
+        # The transform is its coefficients, not a field over the grid.
+        assert tform.params.shape == (len(points) + 3, 2)
+        assert tform.size == (64, 64)
 
     def test_affine_type_sets_affine_only(self, points):
         manager = TransformManager()
@@ -746,8 +748,15 @@ class TestTransformManager:
             src, dst, TransformType.TPS, (32, 32), n_slices=5
         )
         assert set(transforms) == {0, 1, 2, 3, 4}
-        for tform in transforms.values():
-            assert tform.params.shape == (2, 32, 32)
+        # Keyed slices keep their coefficients; interpolated ones carry a
+        # blended field, because coefficients fitted to different control
+        # points cannot be averaged.
+        for index, tform in transforms.items():
+            assert tform(np.array([[10.0, 10.0]])).shape == (1, 2)
+            if index in (0, 4):
+                assert tform.params is not None
+            else:
+                assert tform.field.shape == (2, 32, 32)
 
     def test_export_transform_npy(self, points, tmp_path):
         manager = TransformManager()
@@ -755,7 +764,7 @@ class TestTransformManager:
 
         path = tmp_path / "tform.npy"
         manager.export_transform(tform, path, format="npy")
-        assert np.load(path).shape == (2, 16, 16)
+        assert np.load(path).shape == (len(points) + 3, 2)
 
     def test_export_unsupported_format_raises(self, points, tmp_path):
         manager = TransformManager()

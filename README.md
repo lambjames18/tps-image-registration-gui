@@ -237,9 +237,13 @@ from tpsreg import ThinPlateSplineTransform, transform_image
 src = np.array([[10, 10], [10, 90], [90, 10], [90, 90], [50, 50]], dtype=float)
 dst = np.array([[12, 11], [11, 88], [91, 13], [89, 92], [51, 49]], dtype=float)
 
-# Fit a spline over a 100x100 destination grid.
+# Fit a spline. The cost is set by the control points, not the image, and
+# size is only recorded so exports are self-describing.
 tform = ThinPlateSplineTransform()
 tform.estimate(src, dst, size=(100, 100))
+
+# Map coordinates directly. Exact, including at fractional positions.
+where_they_land = tform.map(dst)
 
 # Or warp an image in one call.
 warped = transform_image(image, src, dst, output_shape=(100, 100), order=1)
@@ -247,6 +251,28 @@ warped = transform_image(image, src, dst, output_shape=(100, 100), order=1)
 
 `tpsreg.ransac.ransac_filter` is available separately for rejecting outlier
 correspondences.
+
+### Large images
+
+A fitted transform is its coefficients — under a kilobyte, whatever the size
+of the image. Warping is done a tile at a time once the output is large
+enough that one coordinate array for the whole thing would be the limiting
+factor, so a stitched optical mosaic is bounded by the tile rather than by
+the image.
+
+If you are going to query most of a grid repeatedly, a dense displacement
+field can be cached, at whatever resolution is worth the memory:
+
+```python
+tform.build_field(size=(20000, 20000), downsample=4)   # a sixteenth the memory
+...
+tform.clear_field()                                    # give it back
+```
+
+The field is a cache. Clearing it changes speed, not results, beyond the
+interpolation error a coarse field introduces — which falls away
+quadratically as the field gets finer, and at quarter resolution is a few
+hundredths of a pixel for typical control point spacings.
 
 ---
 

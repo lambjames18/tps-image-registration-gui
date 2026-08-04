@@ -6,7 +6,55 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** a `ThinPlateSplineTransform` is now its fitted coefficients
+  rather than a dense displacement field, and `.params` returns those
+  coefficients. The field became a resolution-configurable cache, built only
+  when something asks for it (`build_field`, or `estimate(build_field=True)`).
+
+  Fitting used to evaluate the spline over the entire destination grid, so the
+  cost of a transform scaled with the image rather than with the control
+  points: a 400 Mpx stitched image meant a 3.2 GB transform, and 1600 Mpx
+  meant 12.8 GB, which simply would not run. The coefficients are 0.7 KB
+  whatever the grid.
+
+  Exported transforms are correspondingly small, and CSV and TXT export now
+  work at all — `np.savetxt` refuses a 3D array, so those two formats had
+  always failed for a TPS despite being offered in the export dialog.
+
+  The one place the dense form is still the working representation is
+  interpolating between slices of a 3D stack: neighbouring slices are fitted
+  to different control points, so their coefficients cannot be blended, but
+  their fields share a grid and can. That path now says so explicitly and
+  takes a `downsample` argument.
+
 ### Added
+
+- `ThinPlateSplineTransform.map` evaluates the spline directly at arbitrary
+  coordinates, in double precision, with no grid involved. Mapping 40 points
+  went from 66 s and 134 MB to 1 ms and 0.07 MB, because `transform_coords`
+  used to build the whole dense field and then index it.
+- `ThinPlateSplineTransform.build_field`, `set_field`, `clear_field`, `field`,
+  and `field_step`: the cache, at a chosen resolution. A quarter-resolution
+  field costs about 0.004 px of accuracy for a sixteenth of the memory.
+- `tpsreg.warping.warp`, which warps large outputs a tile at a time.
+  `skimage.transform.warp` builds one coordinate array for the entire output,
+  16 bytes per pixel — 6.4 GB for a 400 Mpx image before any pixels are read.
+  Tiling bounds that by the tile, and turns out to be faster as well.
+- `tpsreg.warping.interpolate_fields`, for blending two displacement fields.
+
+### Fixed
+
+- Every TPS warp was offset by one pixel in both axes. The dense field was
+  sampled on a 1-based grid (`linspace(1, width, width)`) while control points
+  and queries are 0-based, so a transform fitted to identical point sets moved
+  the image by (1, 1) instead of leaving it alone. scikit-image's own affine
+  on the same points was exact, which is what the comparison should always
+  have been against. Two existing tests had encoded the offset as expected
+  behaviour rather than questioning it.
+- Coordinates were truncated to whole pixels before lookup, so sub-pixel
+  warping was impossible no matter what interpolation order was requested.
 
 - Drag a control point to adjust it. Correcting a click that landed slightly
   off previously meant deleting the pair and re-placing both halves. The whole
