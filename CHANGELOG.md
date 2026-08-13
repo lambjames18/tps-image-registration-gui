@@ -8,6 +8,37 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Slice-by-slice registration of an image stack, as a standalone script:
+  `scripts/register_stack.py`. Takes a folder of images, a transform type
+  (`translation`, `rigid`, `affine`, `tps`) and an output folder, and does the
+  whole stack with the MatchAnything model. Nothing in the GUI is involved and
+  no display is needed.
+
+  Each slice can be registered against the previous one, the first, or the
+  middle. Sequential is easiest to match — adjacent slices look alike — but its
+  transforms compose, so per-pair error accumulates as drift along the stack;
+  the fixed-reference modes cannot drift but ask the matcher to relate slices
+  that may no longer resemble each other. Composition is done on the coordinate
+  mapping rather than by resampling once per link, so every slice is
+  interpolated exactly once however long the chain.
+
+  The output folder is a debugging trail, not just images: the registered
+  stack, each pair's matches drawn as lines between the two images, each slice
+  checkerboarded against its reference, the transforms as `.npy`, a
+  `report.json`, a `summary.csv`, and the log. Per pair it records the match
+  count, median and maximum residual, displacement, and warnings — too few
+  matches for the chosen model, degenerate point geometry, a residual out of
+  line with the rest. Slices that moved unlike their neighbours are flagged by
+  a median/MAD z-score.
+
+  A pair that fails to match or fit takes the identity and is recorded as
+  failed rather than aborting; one bad slice in a hundred should not cost the
+  run. Filenames sort numerically, so `slice_10` follows `slice_9` — a plain
+  lexicographic sort silently reorders a stack.
+
+  New: `tpsreg.stack_registration`, which takes the matcher as an argument and
+  so is usable with any matcher, and testable without torch.
+
 - Fit quality is shown live while placing points, rather than only on demand.
   Each marker carries its leave-one-out residual, is coloured on a scale from
   good to bad, and the status bar shows the median and the worst point.
