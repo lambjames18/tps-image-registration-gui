@@ -184,6 +184,54 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Warping a large image was between 4 and 100 times slower than it needed to
+  be. Three separate causes, measured at 8192x8192 with order 1:
+
+  | | before | after |
+  |---|---|---|
+  | rigid or affine, one transform | 101.5 s | 4.1 s |
+  | rigid or affine, slice 300 of a sequential stack | 116.8 s | 1.2 s |
+  | spline, one transform | 132.1 s | 35.1 s |
+
+  *Clipping was inside the tile loop.* skimage clips every warp call to the
+  input image's range, and finding that range means scanning the whole input —
+  the same cost whether the call is warping a 256-pixel tile or the entire
+  image. Tiled, that was a full pass over the source for every tile: 100 ms
+  each, 1024 tiles, 85% of the runtime. It is now done once over the assembled
+  output, which is also exactly what an untiled call does.
+
+  *Matrix transforms were being hidden behind a callable.* skimage has a Cython
+  path for a homogeneous matrix that computes each source coordinate as it
+  goes, so it needs no coordinate array and therefore no tiling. Wrapping the
+  transform in a Python callable, as tiling did, made it unreachable. A
+  translation, rigid or affine transform is now handed over as a matrix.
+
+  *Sequential chains were composed as functions.* Every link was called for
+  every output pixel, so slice 300 cost three hundred times slice 1 — the
+  stack got slower the further into it you were. Where every link is a matrix
+  the chain now collapses into a single matrix when it is built, and depth
+  stops mattering.
+
+  A spline chain still cannot collapse, so `tps` with `reference_mode`
+  `previous` remains linear in depth and is the one combination that stays
+  expensive; `register_stack` now warns when a run asks for it, since `first`
+  and `middle` build no chain at all.
+
+- A matrix transform is now interpolated the same way at every image size. It
+  was not before: outputs under the 4 Mpx tiling threshold went to skimage
+  whole and took its Cython path, while larger ones were tiled through a
+  callable and took scipy's. Those two disagree at order 3 — a cubic
+  convolution against a prefiltered B-spline — so the same transform on the
+  same data gave different pixels either side of the threshold. Order 3 output
+  for translation, rigid and affine transforms above 4 Mpx therefore changes
+  slightly with this release, to match what the same transform already produced
+  below it.
+
+- Sequential runs of `register_stack` exported no transforms at all. The CLI
+  saved `transform.params`, which a composed chain did not have, so
+  `transforms/` came out empty in the default reference mode. A collapsed chain
+  now reports its matrix.
+
 - The busy indicator never animated. It was driven by a Tk timer, which only
   runs while the event loop does — and during a synchronous operation the loop
   never runs, so the bar sat frozen. It also stepped every 1 ms, asking for a

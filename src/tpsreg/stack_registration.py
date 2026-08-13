@@ -22,8 +22,13 @@ so :func:`register_stack` reports the drift it accumulated and leaves the
 choice to the caller.
 
 **Composition.** Slices are never warped more than once. Transforms are
-composed as functions and applied in a single pass, so a hundred-slice stack
-does not accumulate a hundred rounds of interpolation blur.
+composed and applied in a single pass, so a hundred-slice stack does not
+accumulate a hundred rounds of interpolation blur. Where every step is a
+matrix -- translation, rigid and affine -- the composition is a matrix
+product, so the cost of warping slice 300 is the same as slice 1. A chain
+containing a spline cannot reduce that way and is evaluated link by link,
+which does grow with depth; ``first`` or ``middle`` avoids it entirely by
+never building a chain.
 """
 
 from __future__ import annotations
@@ -71,6 +76,12 @@ COMFORTABLE_MATCHES = 8
 #: Image extensions picked up from an input folder.
 IMAGE_SUFFIXES = (".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp")
 
+#: Chain length past which sequential spline registration is worth warning
+#: about. A matrix chain collapses to one matrix and costs nothing to lengthen;
+#: a spline chain does not, so every slice must be evaluated through every
+#: spline before it and the warp cost grows with position in the stack.
+TPS_CHAIN_WARNING_DEPTH = 25
+
 
 class TranslationTransform:
     """A pure shift, fitted as the median offset between matched points.
@@ -101,6 +112,12 @@ class TranslationTransform:
     def params(self) -> np.ndarray:
         return self.offset.copy()
 
+    def as_matrix(self) -> np.ndarray:
+        """The shift as a homogeneous matrix; see `warping.homography_matrix`."""
+        matrix = np.eye(3)
+        matrix[:2, 2] = self.offset
+        return matrix
+
     def describe(self) -> dict[str, Any]:
         return {"dx": float(self.offset[0]), "dy": float(self.offset[1])}
 
@@ -113,12 +130,23 @@ class ChainedTransform:
     hundred-slice stack would arrive at slice 100 having been interpolated a
     hundred times. Composing the coordinate mappings instead means the image
     is resampled exactly once, however long the chain.
+
+    Composing them as *functions*, though, means every one of them is called
+    for every output pixel, so slice 300 costs three hundred times slice 1 --
+    on a long stack that dominates the run. When every link is a matrix, which
+    is the case for translation, rigid and affine, the chain collapses into a
+    single matrix at construction and the depth stops mattering at all. Only a
+    spline in the chain forces the general path.
     """
 
     def __init__(self, transforms: Sequence[Any]):
         self.transforms = list(transforms)
+        self._collapsed = _collapse_to_matrix(self.transforms)
 
     def __call__(self, coords: np.ndarray) -> np.ndarray:
+        if self._collapsed is not None:
+            return np.asarray(self._collapsed(coords), dtype=float)
+
         mapped = np.asarray(coords, dtype=float)
         for transform in self.transforms:
             mapped = np.asarray(transform(mapped), dtype=float)
@@ -127,12 +155,52 @@ class ChainedTransform:
     def __len__(self) -> int:
         return len(self.transforms)
 
+    def as_matrix(self) -> np.ndarray | None:
+        """The whole chain as one matrix, or ``None`` if it does not reduce."""
+        if self._collapsed is None:
+            return None
+        return np.asarray(self._collapsed.params, dtype=float)
+
+    @property
+    def params(self) -> np.ndarray | None:
+        return self.as_matrix()
+
+    def describe(self) -> dict[str, Any]:
+        matrix = self.as_matrix()
+        described: dict[str, Any] = {"chained": len(self.transforms)}
+        if matrix is not None:
+            described["matrix"] = matrix.tolist()
+        return described
+
+
+def _collapse_to_matrix(transforms: Sequence[Any]) -> Any | None:
+    """Multiply a chain of matrix transforms into one, or give up.
+
+    Returns a skimage transform so the mapping is skimage's own tested
+    implementation rather than a second copy of it here -- and so that
+    :func:`tpsreg.warping.warp` recognises it and takes the Cython path.
+    """
+    from tpsreg.warping import homography_matrix
+
+    combined = np.eye(3)
+    for transform in transforms:
+        matrix = homography_matrix(transform)
+        if matrix is None:
+            return None
+        # Applied in list order, so each one multiplies on the left.
+        combined = matrix @ combined
+
+    return sktransform.ProjectiveTransform(matrix=combined)
+
 
 class IdentityTransform:
     """Used where a pair could not be registered, so the slice passes through."""
 
     def __call__(self, coords: np.ndarray) -> np.ndarray:
         return np.asarray(coords, dtype=float)
+
+    def as_matrix(self) -> np.ndarray:
+        return np.eye(3)
 
     def describe(self) -> dict[str, Any]:
         return {"identity": True}
@@ -401,6 +469,21 @@ def register_stack(
         )
     if not images:
         raise ValueError("No images to register.")
+
+    if (
+        transform_type == "tps"
+        and reference_mode == "previous"
+        and len(images) > TPS_CHAIN_WARNING_DEPTH
+    ):
+        logger.warning(
+            "Sequential spline registration over %d slices: warping slice N "
+            "evaluates N splines, so the cost grows along the stack and the "
+            "last slices dominate the run. The constrained models do not have "
+            "this problem -- they compose into a single matrix -- and neither "
+            "does reference_mode='first' or 'middle', where no chain is built. "
+            "Consider one of those if the warp step is too slow.",
+            len(images),
+        )
 
     names = (
         list(names) if names is not None else [f"slice_{i}" for i in range(len(images))]

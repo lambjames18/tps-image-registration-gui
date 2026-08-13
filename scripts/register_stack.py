@@ -49,6 +49,7 @@ from tpsreg.stack_registration import (
     register_stack,
     write_report,
 )
+from tpsreg.warping import homography_matrix
 
 logger = logging.getLogger("register_stack")
 
@@ -335,7 +336,13 @@ def main(argv: list[str] | None = None) -> int:
     transforms_dir = args.output / "transforms"
     transforms_dir.mkdir(parents=True, exist_ok=True)
     for index, transform in enumerate(transforms):
-        params = getattr(transform, "params", None)
+        # Prefer the homogeneous matrix where there is one: for a sequential
+        # run the transform is a composed chain, whose useful export is the
+        # single matrix it reduces to rather than its links. A spline has no
+        # matrix and exports its coefficients instead.
+        params = homography_matrix(transform)
+        if params is None:
+            params = getattr(transform, "params", None)
         if params is not None:
             np.save(transforms_dir / f"{index:04d}.npy", np.asarray(params))
 

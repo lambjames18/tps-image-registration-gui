@@ -313,7 +313,15 @@ and the choice is a real trade-off:
 
 Sequential mode composes coordinate mappings rather than resampling once per
 link, so a slice at the end of the stack is interpolated exactly once no matter
-how long the chain is.
+how long the chain is. For `translation`, `rigid` and `affine` the composition
+is a matrix product, so warping slice 300 costs the same as slice 1.
+
+A spline chain cannot reduce that way — warping slice N evaluates N splines —
+so `--transform tps --reference previous` gets slower the further into the
+stack it goes, and on a long stack of large images it is impractical. Use
+`--reference first` or `--reference middle` with `tps`, where each slice has
+exactly one spline and nothing accumulates. The script warns when a run asks
+for the expensive combination.
 
 The output folder holds the aligned images plus the debugging trail:
 
@@ -384,6 +392,12 @@ of the image. Warping is done a tile at a time once the output is large
 enough that one coordinate array for the whole thing would be the limiting
 factor, so a stitched optical mosaic is bounded by the tile rather than by
 the image.
+
+A transform that is really a matrix — translation, rigid, affine, projective —
+skips tiling entirely and is handed to skimage as a matrix, which lets it
+compute source coordinates in Cython without building a coordinate array at
+all. At 8192×8192 that is 4 s rather than 101 s. Splines take the tiled path,
+where the cost is dominated by evaluating the kernel.
 
 If you are going to query most of a grid repeatedly, a dense displacement
 field can be cached, at whatever resolution is worth the memory:

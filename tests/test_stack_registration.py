@@ -153,6 +153,84 @@ class TestChainedTransform:
         )
 
 
+class TestChainCollapse:
+    """A chain of matrices must reduce to one matrix.
+
+    Composing them as functions is correct but costs a call per link for every
+    output pixel, so slice 300 of a stack costs three hundred times slice 1.
+    At 8192x8192 that was the difference between 117 s and 1.2 s a slice.
+    """
+
+    @staticmethod
+    def _links():
+        return [
+            TranslationTransform(np.array([1.5, -2.5])),
+            sktransform.EuclideanTransform(rotation=0.02, translation=(3.0, 4.0)),
+            sktransform.AffineTransform(scale=1.01, shear=0.01),
+        ]
+
+    def test_a_matrix_chain_collapses(self):
+        chain = ChainedTransform(self._links())
+        assert chain.as_matrix() is not None
+        assert chain.as_matrix().shape == (3, 3)
+
+    def test_collapsing_does_not_change_the_mapping(self, rng):
+        """The whole point: same answer, without walking the chain."""
+        links = self._links()
+        chain = ChainedTransform(links)
+
+        query = rng.uniform(0, 500, size=(200, 2))
+        expected = query.copy()
+        for link in links:
+            expected = np.asarray(link(expected), dtype=float)
+
+        np.testing.assert_allclose(chain(query), expected, atol=1e-9)
+
+    def test_depth_does_not_change_the_answer(self, rng):
+        """A long chain of shifts is one shift, exactly."""
+        step = np.array([0.75, -1.25])
+        chain = ChainedTransform([TranslationTransform(step)] * 300)
+
+        query = rng.uniform(0, 100, size=(50, 2))
+        np.testing.assert_allclose(chain(query), query + step * 300, atol=1e-9)
+
+    def test_a_spline_in_the_chain_blocks_collapse(self):
+        """A spline is not a matrix, so the chain must stay a chain.
+
+        Silently collapsing here would replace the deformation with an affine
+        approximation of it -- wrong in a way that still looks plausible.
+        """
+        from tpsreg.tps import ThinPlateSplineTransform
+
+        spline = ThinPlateSplineTransform()
+        spline.estimate(GRID + np.array([2.0, 3.0]), GRID, (120, 140))
+
+        chain = ChainedTransform([TranslationTransform(np.array([1.0, 1.0])), spline])
+        assert chain.as_matrix() is None
+        assert chain.params is None
+
+    def test_an_identity_link_collapses(self):
+        """A failed pair contributes the identity; it must not block collapse."""
+        chain = ChainedTransform(
+            [TranslationTransform(np.array([2.0, 3.0])), IdentityTransform()]
+        )
+        expected = np.eye(3)
+        expected[:2, 2] = [2.0, 3.0]
+        np.testing.assert_allclose(chain.as_matrix(), expected)
+
+    def test_sequential_registration_produces_a_collapsed_chain(self, shifted_stack):
+        """End to end: the transforms handed back are matrices, not chains."""
+        images, _, match_fn = shifted_stack
+        transforms, _ = register_stack(
+            images,
+            match_fn,
+            transform_type="rigid",
+            reference_mode="previous",
+        )
+        assert isinstance(transforms[-1], ChainedTransform)
+        assert transforms[-1].as_matrix() is not None
+
+
 class TestEstimatePairTransform:
     """Fitting one pair."""
 
