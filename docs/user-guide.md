@@ -7,9 +7,10 @@ this is the reference to come back to with the app open.
 - [Main window](#main-window)
 - [File menu](#file-menu)
 - [Edit menu](#edit-menu)
+- [Points menu](#points-menu)
 - [View menu](#view-menu)
 - [Smoothing](#smoothing)
-- [Auto menu](#auto-menu)
+- [Help menu](#help-menu)
 - [Export formats and cropping](#export-formats-and-cropping)
 
 ---
@@ -42,8 +43,8 @@ looking at it. Below nine points nothing is shown — see
 
 ![File menu](images/GUI-file-menubar.jpg)
 
-Create, open and save projects; import and export data; import and export
-control points.
+Projects, images and exports — everything with a path on disk. Control points
+have their own menu.
 
 **Open source image** and **Open destination image** load the two images. The
 *source* is the one that gets warped, so load the more distorted image there.
@@ -61,9 +62,9 @@ a session can be picked up later or handed to someone else.
 
 ![Edit menu](images/GUI-edit-menubar.jpg)
 
-Undo and redo, clear points, and set the pixel size of each image. Each click is
-one undoable step, as is each drag. Undo and redo are greyed out when there is
-nothing to undo or redo.
+Undo, redo, and the pixel size of each image. Each click is one undoable step,
+as is each drag. Undo and redo are greyed out when there is nothing to undo or
+redo.
 
 **Set resolution** takes microns per pixel for both images. It is needed for
 *Match resolutions* and for source-cropped export. If the resolution is not set,
@@ -71,25 +72,40 @@ both images are assumed to have the same pixel size.
 
 ---
 
-## View menu
+## Points menu
 
-![View menu](images/GUI-view-menubar.jpg)
+![Points menu](images/GUI-auto-menubar.jpg)
 
-Toggle point visibility and open the preview windows.
+Everything that acts on control points: detecting them, loading and saving
+them, checking them, hiding them, clearing them. They used to be spread
+across four menus.
 
-### View corrected image
+**Load source points**, **Load destination points** and **Save points** read
+and write plain coordinate files, so a point set can be reused on another
+pair of images or handed to someone else. **Clear points** asks whether to
+clear the current slice or the whole stack. **Hide points** takes the markers
+off the canvas without deleting anything — useful for judging an overlay.
 
-Overlays the warped source on the destination, with sliders for the blend and —
-in 3D — for the slice and slicing axis. The 2D preview offers three ways to
-compare:
+### Detecting points automatically
 
-| Mode | Shows |
-| --- | --- |
-| `wipe` | Drag the sliders to sweep one image over the other. Best for checking a single edge. |
-| `checkerboard` | Alternating squares from each image. Misalignment shows as features stepping sideways at every tile boundary. |
-| `difference` | Absolute difference. A good alignment is black; whatever still glows did not line up. |
+*Detect with MatchAnything* and *Detect with SIFT* place points for you.
+MatchAnything needs the `matchanything` extra and a checkpoint — see
+[installation](../README.md#optional-extras), and point the application at the
+file with *Set MatchAnything checkpoint*.
 
-![Correction preview](images/GUI-preview.jpg)
+![MatchAnything settings](images/GUI-auto-options.jpg)
+
+| Setting | Meaning |
+|---|---|
+| Num samples | Maximum number of matched points to return. |
+| Enable RANSAC filtering | Reject correspondences inconsistent with a global transform. Leave on. |
+| RANSAC method | `deformable` (default), `affine`, or `projective`. `deformable` and `projective` give broadly similar results; use `affine` only when you know the distortion is affine. |
+| RANSAC threshold | 0.01–0.1 for `deformable` (normalized units), around 5.0 for `affine`/`projective` (pixels). |
+| RANSAC max trials | Iterations. At least 100; raise it when the outlier rate is high. |
+
+Automatic detection is a starting point, not an answer: check the result in
+*View → Matched points* and delete or drag anything that looks wrong before
+exporting.
 
 ### Check registration quality
 
@@ -115,7 +131,29 @@ few would be alarming and wrong.
 The menu version refits once per control point, so it is on a menu rather than
 running as you click — about 15 ms at 50 points, 0.3 s at 200.
 
-### View matched points
+---
+
+## View menu
+
+![View menu](images/GUI-view-menubar.jpg)
+
+The preview windows and the zoom controls.
+
+### Corrected image
+
+Overlays the warped source on the destination, with sliders for the blend and —
+in 3D — for the slice and slicing axis. The 2D preview offers three ways to
+compare:
+
+| Mode | Shows |
+| --- | --- |
+| `wipe` | Drag the sliders to sweep one image over the other. Best for checking a single edge. |
+| `checkerboard` | Alternating squares from each image. Misalignment shows as features stepping sideways at every tile boundary. |
+| `difference` | Absolute difference. A good alignment is black; whatever still glows did not line up. |
+
+![Correction preview](images/GUI-preview.jpg)
+
+### Matched points
 
 Shows both images side by side with lines joining matched points, which makes
 bad correspondences obvious: they are the lines that cross the others.
@@ -149,27 +187,11 @@ thing whatever the image size. Useful values are typically between 0.001 and
 
 ---
 
-## Auto menu
+## Help menu
 
-![Auto menu](images/GUI-auto-menubar.jpg)
-
-Detect control points automatically with either SIFT or the pretrained
-MatchAnything model. MatchAnything needs the `matchanything` extra and a
-checkpoint — see [installation](../README.md#optional-extras).
-
-![MatchAnything settings](images/GUI-auto-options.jpg)
-
-| Setting | Meaning |
-|---|---|
-| Num samples | Maximum number of matched points to return. |
-| Enable RANSAC filtering | Reject correspondences inconsistent with a global transform. Leave on. |
-| RANSAC method | `deformable` (default), `affine`, or `projective`. `deformable` and `projective` give broadly similar results; use `affine` only when you know the distortion is affine. |
-| RANSAC threshold | 0.01–0.1 for `deformable` (normalized units), around 5.0 for `affine`/`projective` (pixels). |
-| RANSAC max trials | Iterations. At least 100; raise it when the outlier rate is high. |
-
-Automatic detection is a starting point, not an answer: check the result in
-*View matched points* and delete or drag anything that looks wrong before
-exporting.
+**User guide** opens this document. **Keyboard shortcuts** lists every binding
+the application has. **Report an issue** opens the issue tracker, and **About**
+gives the version — worth quoting in a bug report.
 
 ---
 

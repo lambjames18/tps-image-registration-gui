@@ -1388,3 +1388,124 @@ class TestChoiceDialog:
         self._drive(app, lambda d: self._button(d, "OK").invoke())
         app.update_idletasks()
         assert self._dialog_of(app) is None
+
+
+class TestMenuBar:
+    """The menu structure, walked rather than assumed.
+
+    Menu entries are wired by name, so a renamed handler fails only when
+    somebody clicks it. These check every entry resolves to something
+    callable, and that the shortcut list the Help menu shows matches what is
+    actually bound.
+    """
+
+    @staticmethod
+    def _menubar(app):
+        return app.nametowidget(app.cget("menu"))
+
+    @classmethod
+    def _labels(cls, menu):
+        labels = []
+        for index in range(menu.index("end") + 1):
+            if menu.type(index) not in ("tearoff", "separator"):
+                labels.append(menu.entrycget(index, "label"))
+        return labels
+
+    @classmethod
+    def _submenu(cls, app, title):
+        menubar = cls._menubar(app)
+        for index in range(menubar.index("end") + 1):
+            if menubar.type(index) == "cascade" and (
+                menubar.entrycget(index, "label") == title
+            ):
+                return app.nametowidget(menubar.entrycget(index, "menu"))
+        raise AssertionError(f"no {title!r} menu")
+
+    def test_the_top_level_menus_are_the_expected_ones(self, app):
+        assert self._labels(self._menubar(app)) == [
+            "File",
+            "Edit",
+            "Points",
+            "View",
+            "Help",
+        ]
+
+    @pytest.mark.parametrize("title", ["File", "Edit", "Points", "View", "Help"])
+    def test_every_entry_is_wired_to_something(self, app, title):
+        """An entry whose command does not resolve fails only on click."""
+        menu = self._submenu(app, title)
+        for index in range(menu.index("end") + 1):
+            if menu.type(index) in ("tearoff", "separator"):
+                continue
+            command = menu.entrycget(index, "command")
+            label = menu.entrycget(index, "label")
+            assert command, f"{title} -> {label} has no command"
+            # Tk stores the callback by name; if it is not registered, this
+            # is where a stale command shows up rather than at click time.
+            assert app.tk.call("info", "commands", command), (
+                f"{title} -> {label} points at a command that does not exist"
+            )
+
+    @pytest.mark.parametrize("title", ["File", "Edit", "Points", "View", "Help"])
+    def test_no_menu_repeats_a_label(self, app, title):
+        labels = self._labels(self._submenu(app, title))
+        assert len(labels) == len(set(labels))
+
+    def test_point_operations_all_live_under_points(self, app):
+        """The reason for the restructure: they used to be spread over four."""
+        labels = " ".join(self._labels(self._submenu(app, "Points")))
+        for expected in ("Load source points", "Save points", "Clear points"):
+            assert expected in labels
+        for expected in ("Detect with MatchAnything", "Detect with SIFT"):
+            assert expected in labels
+        assert "Hide points" in labels
+
+    def test_file_holds_no_point_operations(self, app):
+        labels = " ".join(self._labels(self._submenu(app, "File")))
+        assert "points" not in labels.lower()
+
+    def test_hide_points_keeps_its_variable_alive(self, app):
+        """A BooleanVar built inline is collected and takes the state with it."""
+        assert isinstance(app.hide_points_var, tk.BooleanVar)
+        app.hide_points_var.set(True)
+        assert app.hide_points_var.get() is True
+
+    def test_every_listed_shortcut_is_actually_bound(self, app):
+        """The Help menu must not advertise a shortcut that does nothing."""
+        from tpsreg.GUI import SHORTCUTS
+
+        bound = set(app.bind())
+        translations = {
+            "Ctrl+N": "<Control-Key-n>",
+            "Ctrl+O": "<Control-Key-o>",
+            "Ctrl+S": "<Control-Key-s>",
+            "Ctrl+Z": "<Control-Key-z>",
+            "Ctrl+Y": "<Control-Key-y>",
+            "Ctrl++": "<Control-Key-equal>",
+            "Ctrl+-": "<Control-Key-minus>",
+            "Ctrl+0": "<Control-Key-0>",
+        }
+        for keys, _description in SHORTCUTS:
+            if keys in translations:
+                assert translations[keys] in bound, f"{keys} is listed but not bound"
+
+    def test_every_keyboard_binding_is_listed(self, app):
+        """And the reverse: a binding nobody documents is undiscoverable."""
+        from tpsreg.GUI import SHORTCUTS
+
+        listed = {keys for keys, _ in SHORTCUTS}
+        translations = {
+            "<Control-Key-n>": "Ctrl+N",
+            "<Control-Key-o>": "Ctrl+O",
+            "<Control-Key-s>": "Ctrl+S",
+            "<Control-Key-z>": "Ctrl+Z",
+            "<Control-Key-y>": "Ctrl+Y",
+            "<Control-Key-equal>": "Ctrl++",
+            "<Control-Key-minus>": "Ctrl+-",
+            "<Control-Key-0>": "Ctrl+0",
+        }
+        for sequence in app.bind():
+            if sequence in translations:
+                assert translations[sequence] in listed, (
+                    f"{sequence} is bound but not in SHORTCUTS"
+                )
