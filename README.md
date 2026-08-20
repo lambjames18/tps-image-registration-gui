@@ -117,7 +117,7 @@ pytest
 Or with [uv](https://docs.astral.sh/uv/):
 
 ```bash
-uv sync
+uv sync --all-extras
 uv run tpsreg
 ```
 
