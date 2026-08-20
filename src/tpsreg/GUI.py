@@ -10,9 +10,11 @@ import os
 import sys
 import tkinter as tk
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from typing import Any, ClassVar
 
 import numpy as np
 from PIL import Image, ImageTk
@@ -173,6 +175,11 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         s.configure("TFrame", background=self.bg)
         s.configure("TLabel", background=self.bg, foreground=self.fg)
         s.configure("TCheckbutton", background=self.bg, foreground=self.fg)
+        # The packaged theme lays TRadiobutton out but never colours it, so
+        # its label kept the default theme's light background and every radio
+        # button sat in a pale box. Nothing used ttk radio buttons until the
+        # choice dialogs did, which is why it went unnoticed.
+        s.configure("TRadiobutton", background=self.bg, foreground=self.fg)
         s.configure(
             "TLabelframe",
             background=self.bg,
@@ -942,6 +949,28 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         ):
             self.set_status("Transform exported successfully")
 
+    #: Save-dialog filters per export format.
+    EXPORT_FILE_TYPES: ClassVar[dict] = {
+        DataFormat.IMAGE: [
+            ("TIFF Image", "*.tif *.tiff"),
+            ("PNG Image", "*.png"),
+            ("JPEG Image", "*.jpg"),
+            ("All Files", "*.*"),
+        ],
+        DataFormat.RAW_IMAGE: [
+            ("TIFF Image", "*.tif *.tiff"),
+            ("All Files", "*.*"),
+        ],
+        DataFormat.ANG: [
+            ("ANG File", "*.ang"),
+            ("All Files", "*.*"),
+        ],
+        DataFormat.DREAM3D: [
+            ("Dream3D File", "*.dream3d"),
+            ("All Files", "*.*"),
+        ],
+    }
+
     def _on_export_corrected(self):
         """Handle exporting corrected image."""
         # This would need implementation for full export functionality
@@ -966,28 +995,14 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
                 self.show_progress(False)
                 return
 
-        if data_format == DataFormat.IMAGE:
-            ftypes = [
-                ("TIFF Image", "*.tif *.tiff"),
-                ("PNG Image", "*.png"),
-                ("JPEG Image", "*.jpg"),
-                ("All Files", "*.*"),
-            ]
-        elif data_format == DataFormat.RAW_IMAGE:
-            ftypes = [
-                ("TIFF Image", "*.tif *.tiff"),
-                ("All Files", "*.*"),
-            ]
-        elif data_format == DataFormat.ANG:
-            ftypes = [
-                ("ANG File", "*.ang"),
-                ("All Files", "*.*"),
-            ]
-        elif data_format == DataFormat.DREAM3D:
-            ftypes = [
-                ("Dream3D File", "*.dream3d"),
-                ("All Files", "*.*"),
-            ]
+        # A mapping rather than a chain of branches: an unhandled format used
+        # to leave `ftypes` unbound and fail with a NameError at the next line
+        # rather than saying anything useful.
+        ftypes = self.EXPORT_FILE_TYPES.get(data_format)
+        if ftypes is None:  # pragma: no cover - the dialog only offers keys
+            self.show_progress(False)
+            self.on_error(f"Cannot export as {data_format.value}.")
+            return
 
         path = self._ask_save(
             title="Export Corrected Data",
@@ -2118,99 +2133,193 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         dialog.wait_window()
         return result[0], result[1]
 
-    def _get_crop_mode_dialog(self) -> CropMode | None:
-        """Show dialog to select crop mode."""
+    #: Text width of a choice dialog, in characters. Wide enough that a
+    #: one-sentence description does not wrap to three lines, narrow enough
+    #: that it stays readable.
+    CHOICE_WRAP_PIXELS = 380
+
+    def _choose_one(
+        self,
+        title: str,
+        prompt: str,
+        options: Sequence[tuple[Any, str, str]],
+        initial: Any | None = None,
+    ) -> Any | None:
+        """Modal dialog asking the user to pick one of `options`.
+
+        Each option is ``(value, label, description)``. The description sits
+        under its own radio button rather than being collected into one block
+        of prose at the bottom, so the explanation of a choice is next to the
+        thing it explains.
+
+        Returns the chosen value, or ``None`` if the dialog was cancelled or
+        closed. A selection is always valid: the dialog opens with `initial`
+        (or the first option) already chosen, so OK cannot return something
+        that is not one of the offered values.
+        """
+        if not options:  # pragma: no cover - callers filter beforehand
+            return None
+
         dialog = tk.Toplevel(self)
-        dialog.title("Select Crop Mode")
-        dialog.geometry("290x350")
+        dialog.title(title)
         dialog.transient(self)
-        dialog.grab_set()
-        # Set background to match main window
+        dialog.resizable(False, False)
         apply_to_window(dialog, self.palette)
 
-        selected = tk.StringVar(value="none")
-
-        for crop_mode in CropMode:
-            tk.Radiobutton(
-                dialog,
-                text=crop_mode.value.replace("_", " ").title(),
-                variable=selected,
-                value=crop_mode.value,
-                bg=self.bg,
-                fg=self.fg,
-                selectcolor=self.bg,
-            ).pack(anchor="w", padx=20, pady=5)
-
-        result = [None]
-
-        # Add a description to the dialog
-        description = (
-            "Choose how to crop the corrected image:\n"
-            "- Source: Crop onto a grid equal to the source image (i.e., source is 100x100 pixels so output is 100x100 pixels). Typically involves cropping the output.\n"
-            "- Destination: Crop onto a grid equal to the destination image (i.e., source is 100x100 pixels, destination is 200x200 pixels so output is 200x200 pixels). Typically involves upsampling.\n"
-        )
-        desc_label = ttk.Label(dialog, text=description, wraplength=260, justify="left")
-        desc_label.pack(padx=10, pady=(0, 10))
-
-        def on_ok():
-            result[0] = CropMode(selected.get())
-            dialog.destroy()
-
-        def on_cancel():
-            dialog.destroy()
-
-        button_frame = ttk.Frame(dialog)
-        button_frame.pack(side="bottom", pady=10)
-        ttk.Button(button_frame, text="OK", command=on_ok).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(
-            side="left", padx=5
+        values = [value for value, _label, _description in options]
+        selected = tk.StringVar(
+            value=str(initial if initial in values else values[0]),
         )
 
+        frame = ttk.Frame(dialog, padding=16)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(
+            frame,
+            text=prompt,
+            wraplength=self.CHOICE_WRAP_PIXELS,
+            font=("TkDefaultFont", 10, "bold"),
+        ).pack(anchor="w", pady=(0, 12))
+
+        for value, label, description in options:
+            # ttk rather than tk: the packaged theme styles TRadiobutton, so
+            # these follow the palette instead of needing colours set by hand
+            # and drifting from the rest of the window.
+            ttk.Radiobutton(
+                frame, text=label, variable=selected, value=str(value)
+            ).pack(anchor="w")
+            if description:
+                ttk.Label(
+                    frame,
+                    text=description,
+                    wraplength=self.CHOICE_WRAP_PIXELS - 24,
+                    justify="left",
+                    foreground=self.palette.muted_foreground,
+                ).pack(anchor="w", padx=(24, 0), pady=(0, 10))
+
+        result: list[Any] = [None]
+        by_value = {str(value): value for value in values}
+
+        def on_ok(_event=None):
+            result[0] = by_value[selected.get()]
+            dialog.destroy()
+
+        def on_cancel(_event=None):
+            dialog.destroy()
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(8, 0))
+        ok = ttk.Button(buttons, text="OK", command=on_ok, style="Accent.TButton")
+        ok.pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=on_cancel).pack(
+            side="right", padx=(0, 8)
+        )
+
+        # Enter accepts, Escape and the window's close button cancel. Without
+        # the protocol handler, closing from the title bar would leave the
+        # caller waiting on a window that no longer exists.
+        dialog.bind("<Return>", on_ok)
+        dialog.bind("<Escape>", on_cancel)
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+
+        self._centre_on_self(dialog)
+        dialog.grab_set()
+        ok.focus_set()
         dialog.wait_window()
         return result[0]
+
+    def _centre_on_self(self, dialog: tk.Toplevel) -> None:
+        """Place a dialog over the middle of the main window.
+
+        Tk puts a new Toplevel wherever the window manager likes, which for a
+        modal dialog is often the corner of the screen, away from what the
+        user was looking at.
+        """
+        try:
+            dialog.update_idletasks()
+            width, height = dialog.winfo_width(), dialog.winfo_height()
+            x = self.winfo_rootx() + (self.winfo_width() - width) // 2
+            y = self.winfo_rooty() + (self.winfo_height() - height) // 3
+            dialog.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+        except tk.TclError:  # pragma: no cover - window torn down early
+            logger.debug("Could not centre the dialog", exc_info=True)
+
+    #: What each crop mode does, shown next to it in the export dialog.
+    CROP_MODE_DESCRIPTIONS: ClassVar[dict] = {
+        CropMode.DESTINATION: (
+            "Output has the destination image's dimensions. The usual choice."
+        ),
+        CropMode.SOURCE: (
+            "Output keeps the source grid, so the source's pixel dimensions "
+            "are preserved. Use this for EBSD data, particularly DREAM.3D, "
+            "where the grid must survive. Set the resolution first."
+        ),
+    }
+
+    #: Proper names for the formats. Deriving them from the enum gave "Ang"
+    #: and "Dream3D", which are not what either format is called.
+    FORMAT_LABELS: ClassVar[dict] = {
+        DataFormat.IMAGE: "Image",
+        DataFormat.RAW_IMAGE: "Raw image",
+        DataFormat.ANG: "EDAX .ang",
+        DataFormat.DREAM3D: "DREAM.3D",
+    }
+
+    #: What each export format writes.
+    FORMAT_DESCRIPTIONS: ClassVar[dict] = {
+        DataFormat.IMAGE: (
+            "TIFF, PNG or JPEG, scaled to 8-bit. Also writes the source and "
+            "destination alongside for comparison."
+        ),
+        DataFormat.RAW_IMAGE: (
+            "TIFF at the original bit depth and value range, without scaling. "
+            "Use this when the numbers themselves matter."
+        ),
+        DataFormat.ANG: (
+            "EDAX .ang, carrying every modality across and reusing the "
+            "original file's header."
+        ),
+        DataFormat.DREAM3D: (
+            "DREAM.3D container with every modality, built on the source "
+            "file's layout. Always uses source cropping."
+        ),
+    }
+
+    def _get_crop_mode_dialog(self) -> CropMode | None:
+        """Ask how the corrected image should be cropped."""
+        chosen = self._choose_one(
+            title="Crop mode",
+            prompt="How should the corrected image be cropped?",
+            options=[
+                (mode.value, mode.value.replace("_", " ").title(), description)
+                for mode, description in self.CROP_MODE_DESCRIPTIONS.items()
+            ],
+            initial=CropMode.DESTINATION.value,
+        )
+        return None if chosen is None else CropMode(chosen)
 
     def _get_export_format_dialog(self) -> DataFormat | None:
-        """Show dialog to select export format."""
-        dialog = tk.Toplevel(self)
-        dialog.title("Select Export Format")
-        dialog.geometry("250x260")
-        dialog.transient(self)
-        dialog.grab_set()
-        # Set background to match main window
-        apply_to_window(dialog, self.palette)
+        """Ask which format to export as, offering only the ones that work.
 
-        selected_format = tk.StringVar(value=DataFormat.IMAGE.value)
-
-        ttk.Label(dialog, text="Data Format:").pack(anchor="w", padx=20, pady=5)
-        for data_format in DataFormat:
-            tk.Radiobutton(
-                dialog,
-                text=data_format.value.replace("_", " ").title(),
-                variable=selected_format,
-                value=data_format.value,
-                bg=self.bg,
-                fg=self.fg,
-                selectcolor=self.bg,
-            ).pack(anchor="w", padx=20, pady=5)
-
-        result = [None]
-
-        def on_ok():
-            result[0] = DataFormat(selected_format.get())
-            dialog.destroy()
-
-        def on_cancel():
-            dialog.destroy()
-
-        button_frame = ttk.Frame(dialog)
-        button_frame.pack(side="bottom", pady=10)
-        ttk.Button(button_frame, text="OK", command=on_ok).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(
-            side="left", padx=5
+        A format the loaded data cannot produce is left out rather than shown
+        and refused later: `.ang` and DREAM.3D need the source to have been
+        read from one, since both reuse structure from that file.
+        """
+        available = self.presenter.available_export_formats()
+        chosen = self._choose_one(
+            title="Export format",
+            prompt="What should the corrected data be written as?",
+            options=[
+                (
+                    fmt.value,
+                    self.FORMAT_LABELS.get(fmt, fmt.value.replace("_", " ").title()),
+                    self.FORMAT_DESCRIPTIONS.get(fmt, ""),
+                )
+                for fmt in available
+            ],
+            initial=DataFormat.IMAGE.value,
         )
-
-        dialog.wait_window()
-        return result[0]
+        return None if chosen is None else DataFormat(chosen)
 
     def _get_modality_name_dialog(self, filename: str) -> str | None:
         """Show dialog to enter a modality name for an image."""
@@ -2268,55 +2377,19 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _get_point_clear_dialog(self) -> str | None:
         """Show dialog to choose point clearing option."""
-        dialog = tk.Toplevel(self)
-        dialog.title("Clear Points")
-        dialog.geometry("300x180")
-        dialog.transient(self)
-        dialog.grab_set()
-        apply_to_window(dialog, self.palette)
-
-        # Main frame
-        main_frame = ttk.Frame(dialog, padding="10")
-        main_frame.pack(fill="both", expand=True)
-
-        # Label
-        ttk.Label(
-            main_frame, text="Choose an option to clear points:", wraplength=250
-        ).pack(pady=(0, 10))
-
-        result = [None]
-
-        def on_ok():
-            result[0] = selected_option.get()
-            dialog.destroy()
-
-        def on_cancel():
-            dialog.destroy()
-
-        # Radio buttons
-        selected_option = tk.StringVar(value="image")
-        options = [("Current Image", "image"), ("Entire Stack", "stack")]
-        for text, value in options:
-            tk.Radiobutton(
-                main_frame,
-                text=text,
-                variable=selected_option,
-                value=value,
-                bg=self.bg,
-                fg=self.fg,
-                selectcolor=self.bg,
-            ).pack(anchor="w", padx=20, pady=5)
-
-        # Button frame
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(pady=10)
-        ttk.Button(button_frame, text="OK", command=on_ok).pack(side="left", padx=5)
-        ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(
-            side="left", padx=5
+        return self._choose_one(
+            title="Clear points",
+            prompt="Which points should be cleared?",
+            options=[
+                ("image", "Current image", "Only the points on the slice on screen."),
+                (
+                    "stack",
+                    "Entire stack",
+                    "Every point on every slice. This cannot be undone in one step.",
+                ),
+            ],
+            initial="image",
         )
-
-        dialog.wait_window()
-        return result[0]
 
     def _get_auto_detect_params_dialog(self, method: str) -> dict | None:
         """Show dialog to configure auto point detection parameters.

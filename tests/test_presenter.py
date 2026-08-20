@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from skimage import io
 
-from tpsreg.models import TransformType
+from tpsreg.models import DataFormat, TransformType
 from tpsreg.presenter import ApplicationPresenter, CropMode
 
 
@@ -641,7 +641,7 @@ class TestTransforms:
 
     def test_transform_with_points_produces_a_warp(self, loaded):
         self._add_grid(loaded)
-        warped, _src_img, dst_img = loaded.apply_transform(
+        warped, _src_img, dst_img, _tform = loaded.apply_transform(
             TransformType.TPS, return_data=True
         )
         assert warped.shape[:2] == dst_img.shape[:2]
@@ -649,7 +649,7 @@ class TestTransforms:
 
     def test_affine_transform_also_works(self, loaded):
         self._add_grid(loaded, jitter=2.0)
-        warped, _, _ = loaded.apply_transform(TransformType.TPS, return_data=True)
+        warped, _, _, _ = loaded.apply_transform(TransformType.TPS, return_data=True)
         assert np.all(np.isfinite(warped))
 
     def test_preview_reaches_the_view(self, loaded, fake_view):
@@ -659,7 +659,7 @@ class TestTransforms:
 
     def test_source_crop_mode_returns_source_sized_output(self, loaded):
         self._add_grid(loaded)
-        warped, src_img, _ = loaded.apply_transform(
+        warped, src_img, _, _ = loaded.apply_transform(
             TransformType.TPS, crop_mode=CropMode.SOURCE, return_data=True
         )
         assert warped.shape[0] <= src_img.shape[0]
@@ -732,3 +732,55 @@ class TestAutoDetection:
         path = tmp_path / "model.ckpt"
         presenter.set_checkpoint_path(path)
         assert presenter.get_checkpoint_path() == str(path)
+
+
+class TestAvailableExportFormats:
+    """Which export formats the interface should offer.
+
+    Offering a format that cannot be written and failing afterwards wastes the
+    user's time: by then they have chosen a crop mode, picked a filename, and
+    waited for the warp. The dialog asks this first instead.
+    """
+
+    def test_plain_images_are_always_offered(self, presenter):
+        formats = presenter.available_export_formats()
+        assert DataFormat.IMAGE in formats
+        assert DataFormat.RAW_IMAGE in formats
+
+    def test_nothing_loaded_still_offers_images(self, presenter):
+        """No source at all must not raise; it just cannot round-trip."""
+        assert presenter.available_export_formats() == [
+            DataFormat.IMAGE,
+            DataFormat.RAW_IMAGE,
+        ]
+
+    def test_an_ordinary_image_cannot_export_as_ang_or_dream3d(self, loaded):
+        formats = loaded.available_export_formats()
+        assert DataFormat.ANG not in formats
+        assert DataFormat.DREAM3D not in formats
+
+    def test_an_ang_source_can_export_as_ang(self, loaded):
+        loaded.source_image.metadata["dataformat"] = DataFormat.ANG.value
+        formats = loaded.available_export_formats()
+        assert DataFormat.ANG in formats
+        assert DataFormat.DREAM3D not in formats
+
+    def test_a_dream3d_source_can_export_as_dream3d(self, loaded):
+        loaded.source_image.metadata["dataformat"] = DataFormat.DREAM3D.value
+        formats = loaded.available_export_formats()
+        assert DataFormat.DREAM3D in formats
+        assert DataFormat.ANG not in formats
+
+    def test_the_destination_format_does_not_unlock_an_export(self, loaded):
+        """The export warps source data and reuses the source's header.
+
+        A destination that happens to be an .ang does not make an .ang export
+        possible, so it must not enable the option.
+        """
+        loaded.destination_image.metadata["dataformat"] = DataFormat.ANG.value
+        assert DataFormat.ANG not in loaded.available_export_formats()
+
+    def test_h5_is_never_offered(self, loaded):
+        """Reading .h5 works; writing it raises NotImplementedError."""
+        loaded.source_image.metadata["dataformat"] = DataFormat.H5.value
+        assert DataFormat.H5 not in loaded.available_export_formats()

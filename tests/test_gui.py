@@ -16,11 +16,13 @@ module noticeably faster everywhere.
 from __future__ import annotations
 
 import contextlib
+from typing import ClassVar
 
 import numpy as np
 import pytest
 
 tk = pytest.importorskip("tkinter", reason="Tk is not installed")
+ttk = pytest.importorskip("tkinter.ttk", reason="Tk is not installed")
 
 pytestmark = pytest.mark.gui
 
@@ -838,12 +840,12 @@ class TestQualityFlagging:
         app, quality = flagged
         worst = quality.worst_point
 
-        outlines = {
-            app.left_canvas.itemcget(item, "outline")
+        fills = {
+            app.left_canvas.itemcget(item, "fill")
             for item in app.left_canvas.find_withtag(f"point_{worst}")
             if app.left_canvas.type(item) == "oval"
         }
-        assert app.palette.warning in outlines
+        assert app.palette.warning in fills
 
     def test_ordinary_markers_keep_their_colour(self, flagged):
         app, quality = flagged
@@ -1159,12 +1161,12 @@ class TestLiveResiduals:
         self._place(with_images, grid, grid)
         with_images.update_display()
 
-        outlines = {
-            with_images.left_canvas.itemcget(item, "outline")
+        fills = {
+            with_images.left_canvas.itemcget(item, "fill")
             for item in with_images.left_canvas.find_withtag("point_2")
             if with_images.left_canvas.type(item) == "oval"
         }
-        assert with_images.palette.success in outlines
+        assert with_images.palette.success in fills
 
 
 class TestLoadingThroughTheRealView:
@@ -1206,3 +1208,183 @@ class TestLoadingThroughTheRealView:
         src_points, dst_points = app.presenter.get_points()
         np.testing.assert_array_equal(src_points, [[20, 20]])
         np.testing.assert_array_equal(dst_points, [[22, 21]])
+
+
+class TestExportDialogs:
+    """The export dialogs, without opening them."""
+
+    def test_every_exportable_format_has_save_filters(self):
+        """The view looks its filters up by format.
+
+        These used to be a chain of if/elif that left `ftypes` unbound for any
+        format it did not mention, so an unhandled one failed with a NameError
+        at the next line rather than saying anything useful.
+        """
+        from tpsreg.GUI import ModernDistortionCorrectionView
+        from tpsreg.presenter import ApplicationPresenter
+
+        presenter = ApplicationPresenter()
+        formats = set(presenter.ALWAYS_EXPORTABLE) | set(presenter.ROUND_TRIP_ONLY)
+
+        for fmt in formats:
+            assert fmt in ModernDistortionCorrectionView.EXPORT_FILE_TYPES
+
+    def test_every_exportable_format_is_described(self):
+        """Each choice carries an explanation next to it in the dialog."""
+        from tpsreg.GUI import ModernDistortionCorrectionView
+        from tpsreg.presenter import ApplicationPresenter
+
+        presenter = ApplicationPresenter()
+        formats = set(presenter.ALWAYS_EXPORTABLE) | set(presenter.ROUND_TRIP_ONLY)
+
+        for fmt in formats:
+            assert ModernDistortionCorrectionView.FORMAT_DESCRIPTIONS.get(fmt)
+
+    def test_every_exportable_format_is_named(self):
+        """Derived names gave "Ang" and "Dream3D" for two proper nouns."""
+        from tpsreg.GUI import ModernDistortionCorrectionView
+        from tpsreg.presenter import ApplicationPresenter
+
+        presenter = ApplicationPresenter()
+        formats = set(presenter.ALWAYS_EXPORTABLE) | set(presenter.ROUND_TRIP_ONLY)
+
+        for fmt in formats:
+            assert ModernDistortionCorrectionView.FORMAT_LABELS.get(fmt)
+
+    def test_every_crop_mode_is_described(self):
+        from tpsreg.GUI import ModernDistortionCorrectionView
+        from tpsreg.presenter import CropMode
+
+        for mode in CropMode:
+            assert ModernDistortionCorrectionView.CROP_MODE_DESCRIPTIONS.get(mode)
+
+
+class TestChoiceDialog:
+    """The shared radio-choice dialog behind crop mode, format and clearing.
+
+    Driven rather than eyeballed: the dialog is opened, a widget is invoked
+    from the test, and the returned value is checked. `_choose_one` blocks in
+    `wait_window`, so the interaction is scheduled with `after` and runs
+    inside that nested event loop.
+
+    Two things keep this from hanging the suite. The interaction retries until
+    the dialog exists rather than assuming it is up after a fixed delay -- it
+    is created after `after` is scheduled, so a fixed delay is a race, and an
+    exception raised inside a Tk callback is swallowed, leaving `wait_window`
+    waiting forever. And a watchdog tears down any dialog still standing, so a
+    mis-driven test fails instead of blocking.
+    """
+
+    OPTIONS: ClassVar[list] = [
+        ("first", "First", "The leading option."),
+        ("second", "Second", "The other one."),
+    ]
+
+    WATCHDOG_MS = 5000
+
+    @staticmethod
+    def _dialog_of(app):
+        """The dialog `_choose_one` opened, or None if it is not up yet."""
+        return next(
+            (child for child in app.winfo_children() if isinstance(child, tk.Toplevel)),
+            None,
+        )
+
+    @classmethod
+    def _descendants(cls, widget, kind):
+        for child in widget.winfo_children():
+            if isinstance(child, kind):
+                yield child
+            yield from cls._descendants(child, kind)
+
+    @classmethod
+    def _button(cls, dialog, text):
+        return next(
+            button
+            for button in cls._descendants(dialog, ttk.Button)
+            if button.cget("text") == text
+        )
+
+    def _drive(self, app, action, **kwargs):
+        """Open the dialog, run `action` on it, and return what it produced."""
+
+        def interact():
+            dialog = self._dialog_of(app)
+            if dialog is None:
+                app.after(10, interact)
+                return
+            action(dialog)
+
+        def give_up():
+            for stray in list(self._descendants(app, tk.Toplevel)):
+                with contextlib.suppress(tk.TclError):
+                    stray.destroy()
+
+        app.after(10, interact)
+        watchdog = app.after(self.WATCHDOG_MS, give_up)
+        try:
+            return app._choose_one("Test", "Pick one:", self.OPTIONS, **kwargs)
+        finally:
+            # The root is shared between tests; a watchdog left armed would
+            # fire during a later test and tear down its dialog instead.
+            with contextlib.suppress(tk.TclError):
+                app.after_cancel(watchdog)
+
+    def test_ok_returns_the_default_without_touching_anything(self, app):
+        """The old crop dialog opened with nothing selected and raised.
+
+        Its variable started at "none", which is not a CropMode, so pressing
+        OK straight away died on ValueError inside the enum lookup. A dialog
+        must open on a valid choice.
+        """
+        assert self._drive(app, lambda d: self._button(d, "OK").invoke()) == "first"
+
+    def test_an_explicit_initial_is_honoured(self, app):
+        result = self._drive(
+            app, lambda d: self._button(d, "OK").invoke(), initial="second"
+        )
+        assert result == "second"
+
+    def test_an_unknown_initial_falls_back_to_the_first(self, app):
+        """A caller passing something not on the list must not break it."""
+        result = self._drive(
+            app, lambda d: self._button(d, "OK").invoke(), initial="nonsense"
+        )
+        assert result == "first"
+
+    def test_cancel_returns_nothing(self, app):
+        assert self._drive(app, lambda d: self._button(d, "Cancel").invoke()) is None
+
+    def test_escape_cancels(self, app):
+        assert self._drive(app, lambda d: d.event_generate("<Escape>")) is None
+
+    def test_closing_the_window_cancels(self, app):
+        """Without a WM_DELETE handler this waits on a window that is gone."""
+        assert self._drive(app, lambda d: d.destroy()) is None
+
+    def test_selecting_then_accepting_returns_the_selection(self, app):
+        def choose_second(dialog):
+            radios = list(self._descendants(dialog, ttk.Radiobutton))
+            radios[1].invoke()
+            self._button(dialog, "OK").invoke()
+
+        assert self._drive(app, choose_second) == "second"
+
+    def test_every_option_gets_a_radio_button(self, app):
+        seen = []
+
+        def count(dialog):
+            seen.extend(
+                radio.cget("text")
+                for radio in self._descendants(dialog, ttk.Radiobutton)
+            )
+            self._button(dialog, "Cancel").invoke()
+
+        self._drive(app, count)
+        assert seen == ["First", "Second"]
+
+    def test_no_dialog_is_left_behind(self, app):
+        """Every path must destroy the window, or the next test inherits it."""
+        self._drive(app, lambda d: self._button(d, "OK").invoke())
+        app.update_idletasks()
+        assert self._dialog_of(app) is None
