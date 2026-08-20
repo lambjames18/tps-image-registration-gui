@@ -6,7 +6,38 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The README has been split into a front page and three guides. It had grown to
+  430 lines and was serving four readers at once — someone deciding whether to
+  use the tool, someone installing it, someone with the app open trying to do a
+  thing, and someone importing `tpsreg` in a script. The menu-by-menu interface
+  reference in particular is a manual you consult while working, not something
+  to scroll past on the way to the install command.
+
+  - `docs/user-guide.md` — the application, menu by menu.
+  - `docs/stack-registration.md` — the command-line stack script.
+  - `docs/api.md` — using `tpsreg` as a library.
+
+  The README keeps the pitch, installation, and a quickstart that ends at a
+  working result, and gains a troubleshooting section and a note on how to cite
+  the software, which the `CITATION.cff` had never been pointed at from.
+
+  Plain markdown rather than a docs site: it renders in place on GitHub, needs
+  no build step, and adds no CI job that can fail for documentation reasons.
+
 ### Added
+
+- Tests for the documentation (`tests/test_docs.py`). Internal links and
+  section anchors must resolve, referenced images must exist, and the CLI
+  guide must agree with the argument parser — every flag documented, no flag
+  invented, and the minimum-match table matching `MINIMUM_MATCHES`.
+
+  Prose rots more quietly than code: a renamed section leaves a link that still
+  looks fine in a diff and is only found by a reader. Writing these caught
+  three API errors in the library guide as it was being written — `assess` had
+  been given the wrong signature, `select_regularization` returns a tuple
+  rather than a scalar, and `TransformQuality` has no `residual_median` field.
 
 - Slice-by-slice registration of an image stack, as a standalone script:
   `scripts/register_stack.py`. Takes a folder of images, a transform type
