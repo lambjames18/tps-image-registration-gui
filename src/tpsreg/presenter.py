@@ -339,7 +339,7 @@ class ApplicationPresenter:
         """Get the current checkpoint path for MatchAnything."""
         return PointAutoIdentifier.checkpoint_path
 
-    def auto_detect_points(self, method: str, **kwargs) -> None:
+    def auto_detect_points(self, method: str, **kwargs) -> bool:
         """Automatically detect control points using specified method.
 
         Args:
@@ -1010,7 +1010,7 @@ class ApplicationPresenter:
 
         return src_img, dst_img
 
-    def get_current_image_stacks(self, normalize=True) -> tuple[np.ndarray, np.ndarray]:
+    def get_current_image_stacks(self, normalize=True) -> tuple[np.ndarray, np.ndarray] | None:
         """Get current image stacks for 3D processing."""
         # Get the current source image stack
         if not self.source_image:
@@ -1058,7 +1058,7 @@ class ApplicationPresenter:
         preview: bool = False,
         return_data: bool = False,
         tform: Any = None,
-    ) -> np.ndarray | None:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, Any] | None:
         """Apply transformation to current image/slice."""
         try:
             # Get current source image
@@ -1112,7 +1112,7 @@ class ApplicationPresenter:
                 self._notify_view_show_preview(warped, dst_img)
 
             if return_data:
-                return warped, src_img, dst_img
+                return warped, src_img, dst_img, tform
 
         except Exception as e:
             logger.error("Failed to apply transform: %s", e)

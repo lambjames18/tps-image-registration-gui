@@ -1956,12 +1956,12 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
                 y - radius,
                 x + radius,
                 y + radius,
-                fill="white",
-                outline=outline,
-                width=3 if flagged else 2,
+                fill=outline,
+                outline="black",
+                width=4 if flagged else 3,
                 tags=f"point_{i}",
             )
-            self._label_point(self.left_canvas, i, x, y, "red")
+            self._label_point(self.left_canvas, i, x, y, "black", outline)
 
         # Draw destination points
         for i, point in enumerate(dst_points):
@@ -1980,14 +1980,14 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
                 y - radius,
                 x + radius,
                 y + radius,
-                fill="white",
-                outline=outline,
-                width=3 if flagged else 2,
+                fill=outline,
+                outline="black",
+                width=4 if flagged else 3,
                 tags=f"point_{i}",
             )
-            self._label_point(self.right_canvas, i, x, y, "green")
+            self._label_point(self.right_canvas, i, x, y, "black", outline)
 
-    def _label_point(self, canvas, index, x, y, outline_colour):
+    def _label_point(self, canvas, index, x, y, outline_colour, fill_colour):
         """Draw a marker's index, and its residual when one is known.
 
         Two passes of text, a bold dark one under a lighter one, so the label
@@ -1999,7 +1999,7 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             label = f"{index}: {residual:.1f}"
 
         def create_outlined_text(
-            canvas, x, y, text, text_color, outline_color, font, thickness=1
+            canvas, x, y, text, text_color, outline_color, font, thickness=2
         ):
             # Draw the outline by cloning the text in 8 directions around the center
             kwargs = {
@@ -2021,24 +2021,10 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             x + 5,
             y - 5,
             text=label,
-            text_color="white",
+            text_color=fill_colour,
             outline_color=outline_colour,
             font=("Arial", 10),
         )
-
-        # for colour, font in (
-        #     (outline_colour, ("Arial", 11, "bold")),
-        #     ("white", ("Arial", 10)),
-        # ):
-        # canvas.create_text(
-        #     x + 5,
-        #     y - 5,
-        #     text=label,
-        #     fill=colour,
-        #     font=font,
-        #     anchor="sw",
-        #     tags=f"point_{index}",
-        # )
 
     def set_status(self, message: str):
         """Update status bar."""
