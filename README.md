@@ -74,8 +74,14 @@ placing control points, CLAHE, previewing, and every export path.
 To use MatchAnything you also need the model weights, which are
 [downloaded separately](https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view)
 and pointed at from **Auto → Set MatchAnything checkpoint...**. The model runs on
-CUDA, Apple Silicon (MPS) or CPU, selected automatically; CPU inference works but
-is slow. The first run downloads additional internal weights.
+CUDA, Apple Silicon (MPS) or CPU, selected automatically. The first run downloads
+additional internal weights.
+
+Only CUDA gets the model's half-precision fast path: it depends on CUDA
+autocast, and parts of the model stay in full precision without it. On MPS and
+CPU the model therefore runs entirely in float32, which is correct but
+appreciably slower and uses more memory. A machine with an NVIDIA GPU is worth
+using if you have one.
 
 ### Development install
 
@@ -114,14 +120,23 @@ example. See [demo_data/README.md](demo_data/README.md) for details.
 3. **Save the project.** File → *Save project...* writes all data, points and
    settings to a single JSON file.
 4. **Place control points.** Left-click to add, right-click near a point to
-   remove. Click the source first, then its partner in the destination.
+   remove, and drag a point to adjust it. Click the source first, then its
+   partner in the destination.
 5. **Preview.** View → *View corrected image*. Adjust points and repeat until
    satisfied.
 6. **Export.** File → *Export corrected data...*.
 
 Aim for 10–20 points spread evenly across the field of view; more distortion
-needs more points. CLAHE and zoom make features easier to match precisely, and
-"Match resolutions" renders both images at the same feature scale.
+needs more points. CLAHE and zoom make features easier to match precisely,
+"Match resolutions" renders both images at the same feature scale, and
+"Link views" keeps the two panels at the same zoom and scroll position.
+
+Before estimating a transform, the control points are checked and anything
+that will make the fit fail — too few points, points on top of each other,
+points all on one line — is reported with the problem named, rather than
+surfacing as a solver error a few seconds later. Points that will merely give
+a poor result, such as a cluster in one corner of the image, produce a warning
+you can dismiss.
 
 ---
 
@@ -130,9 +145,22 @@ needs more points. CLAHE and zoom make features easier to match precisely, and
 ### Main window
 
 The left and right panels show the source and destination images. The top bar
-controls the slice (for 3D data), the displayed modality, CLAHE, zoom, and
-resolution matching. The bottom bar shows status and a progress bar during long
-operations.
+controls the slice (for 3D data), the displayed modality, CLAHE, zoom, view
+linking, resolution matching, and smoothing. The bottom bar shows the cursor
+position, the point count, the live fit quality, a status message, and a busy
+indicator during long operations.
+
+Left-click places a control point. Right-clicking near one removes the pair.
+Dragging a point moves it, which is the quick way to correct a click that
+landed slightly off; the whole drag is a single undo step. **Link views** ties
+the two panels together so zooming or scrolling one does the same to the other.
+
+Once there are nine or more pairs, each marker shows its leave-one-out
+residual and is coloured from green to orange by how large it is, and the
+status bar shows the median and the worst point. These update as you place,
+delete and drag points, so a bad correspondence is visible while you are still
+looking at it. Below nine points nothing is shown — see the note under *Check
+registration quality* for why.
 
 ### File menu
 
@@ -146,8 +174,9 @@ control points.
 ![Edit menu](./docs/images/GUI-edit-menubar.jpg)
 
 Undo and redo, clear points, and set the pixel size of each image. Each click is
-one undoable step. If the resolution is not set, both images are assumed to have
-the same pixel size.
+one undoable step, as is each drag. Undo and redo are greyed out when there is
+nothing to undo or redo. If the resolution is not set, both images are assumed
+to have the same pixel size.
 
 ### View menu
 
@@ -156,9 +185,58 @@ the same pixel size.
 Toggle point visibility and open the preview windows.
 
 *View corrected image* overlays the warped source on the destination, with
-sliders for the blend and — in 3D — for the slice and slicing axis.
+sliders for the blend and — in 3D — for the slice and slicing axis. The 2D
+preview offers three ways to compare:
+
+| Mode | Shows |
+| --- | --- |
+| `wipe` | Drag the sliders to sweep one image over the other. Best for checking a single edge. |
+| `checkerboard` | Alternating squares from each image. Misalignment shows as features stepping sideways at every tile boundary. |
+| `difference` | Absolute difference. A good alignment is black; whatever still glows did not line up. |
 
 ![Correction preview](./docs/images/GUI-preview.jpg)
+
+*Check registration quality* fits a transform and reports how good the
+correspondences look. Worth knowing about what it does **not** do: it does not
+report how far the fit lands from each control point, because a thin-plate
+spline interpolates — it passes exactly through every point it was given, so
+that number is around 1e-12 whether the points are good or badly wrong.
+
+| Measure | What it tells you |
+| --- | --- |
+| Leave-one-out residual | Refits without each point and measures how far the fit misses it. This is where a mistyped correspondence shows up. Flagged points are drawn with a larger warning-coloured ring so you can find them. |
+| Jacobian determinant | Goes negative where the mapping folds over itself, producing mirrored patches. Invisible to any per-point measure, since the points on either side of a fold are still matched exactly. |
+| Bending energy | How far the warp is from a plain affine. Zero for a pure affine, growing as the deformation gets more local. |
+| Coverage | Fraction of the image the points enclose. Everything outside is extrapolated. |
+
+### Smoothing
+
+Off by default. The top bar has a **Smoothing** selector with *Off*,
+*Automatic*, and a manual number.
+
+Exact interpolation is not the same as an accurate transform. The spline
+passes through every control point you place, which means it also reproduces
+every click error exactly — it contorts itself to honour your mistakes.
+Smoothing lets the fit miss the points a little in exchange for a better match
+to the real deformation.
+
+*Automatic* picks the strength by leave-one-out cross-validation, which is
+worth using in preference to the manual number: the strength has no units
+anyone has an intuition for, and the right value depends on how noisy your
+clicks are relative to the distortion you are correcting. On synthetic data
+with a known answer and 1.5 px of click noise it roughly halved the error
+against the true deformation. With clean points it selects zero and changes
+nothing, so it costs you nothing to leave on.
+
+The manual number is normalised, so the same value means roughly the same
+thing whatever the image size. Useful values are typically between 0.001 and
+1.
+
+Leave-one-out needs roughly nine well-spread points to mean anything: it asks
+the remaining points to predict the held-out one, and with only a handful that
+question has no good answer for any of them. The check refits once per control
+point, so it is on a menu rather than running as you click — about 15 ms at 50
+points, 0.3 s at 200.
 
 *View matched points* shows both images side by side with lines joining matched
 points, which makes bad correspondences obvious.
@@ -209,9 +287,13 @@ from tpsreg import ThinPlateSplineTransform, transform_image
 src = np.array([[10, 10], [10, 90], [90, 10], [90, 90], [50, 50]], dtype=float)
 dst = np.array([[12, 11], [11, 88], [91, 13], [89, 92], [51, 49]], dtype=float)
 
-# Fit a spline over a 100x100 destination grid.
+# Fit a spline. The cost is set by the control points, not the image, and
+# size is only recorded so exports are self-describing.
 tform = ThinPlateSplineTransform()
 tform.estimate(src, dst, size=(100, 100))
+
+# Map coordinates directly. Exact, including at fractional positions.
+where_they_land = tform.map(dst)
 
 # Or warp an image in one call.
 warped = transform_image(image, src, dst, output_shape=(100, 100), order=1)
@@ -219,6 +301,28 @@ warped = transform_image(image, src, dst, output_shape=(100, 100), order=1)
 
 `tpsreg.ransac.ransac_filter` is available separately for rejecting outlier
 correspondences.
+
+### Large images
+
+A fitted transform is its coefficients — under a kilobyte, whatever the size
+of the image. Warping is done a tile at a time once the output is large
+enough that one coordinate array for the whole thing would be the limiting
+factor, so a stitched optical mosaic is bounded by the tile rather than by
+the image.
+
+If you are going to query most of a grid repeatedly, a dense displacement
+field can be cached, at whatever resolution is worth the memory:
+
+```python
+tform.build_field(size=(20000, 20000), downsample=4)   # a sixteenth the memory
+...
+tform.clear_field()                                    # give it back
+```
+
+The field is a cache. Clearing it changes speed, not results, beyond the
+interpolation error a coarse field introduces — which falls away
+quadratically as the field gets finer, and at quarter resolution is a few
+hundredths of a pixel for typical control point spacings.
 
 ---
 

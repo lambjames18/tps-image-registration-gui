@@ -7,12 +7,18 @@ import pytest
 
 from tpsreg.tps import ThinPlateSplineTransform
 from tpsreg.warping import (
+    DEFAULT_TILE,
+    MIN_TILE,
+    _ShiftedTransform,
+    _tile_for,
+    _warp_tiled,
     get_transform,
     get_transform_params,
     set_transform_params,
     transform_coords,
     transform_image,
     transform_image_stack,
+    warp,
 )
 
 
@@ -28,12 +34,7 @@ class TestGetTransform:
     def test_tps_mode(self, grid_points):
         tform = get_transform(grid_points, grid_points, "tps", (64, 64))
         assert isinstance(tform, ThinPlateSplineTransform)
-        assert not tform.affine_only
-
-    def test_tps_affine_mode(self, grid_points):
-        tform = get_transform(grid_points, grid_points, "tps affine", (64, 64))
-        assert isinstance(tform, ThinPlateSplineTransform)
-        assert tform.affine_only
+        assert tform._estimated
 
     def test_mode_is_case_insensitive(self, grid_points):
         tform = get_transform(grid_points, grid_points, "TPS", (64, 64))
@@ -68,7 +69,7 @@ class TestTransformCoords:
             grid_points, grid_points, mode="tps", return_params=True, size=(64, 64)
         )
         assert result.shape == grid_points.shape
-        assert params.shape == (2, 64, 64)
+        assert params.shape == (len(grid_points) + 3, 2)
 
 
 class TestTransformImage:
@@ -91,17 +92,17 @@ class TestTransformImage:
 
         warped = transform_image(image, grid_points, grid_points, order=1)
 
-        # The grid is 1-based, so the result is shifted by one pixel; compare
-        # the interiors rather than demanding an exact match.
-        assert warped[21:43, 21:43].mean() > 0.9
-        assert warped[:15, :15].mean() < 0.1
+        # Exactly preserved, not shifted. This used to be checked loosely on
+        # the interior because the evaluation grid was 1-based and every warp
+        # came out a pixel off in both axes.
+        np.testing.assert_allclose(warped, image, atol=1e-6)
 
     def test_returns_params_when_asked(self, grid_points, checkerboard):
         warped, params = transform_image(
             checkerboard, grid_points, grid_points, return_params=True
         )
         assert warped.shape == checkerboard.shape
-        assert params.shape == (2, *checkerboard.shape)
+        assert params.shape == (len(grid_points) + 3, 2)
 
 
 class TestTransformImageStack:
@@ -184,3 +185,125 @@ class TestTransformImageStack:
         empty = np.empty((0, 3))
         with pytest.raises(ValueError, match="No control points"):
             transform_image_stack(stack, empty, empty)
+
+
+class TestTiledWarping:
+    """Warping large outputs without a coordinate array for the whole thing."""
+
+    @pytest.fixture
+    def transform(self, rng):
+        from tpsreg.tps import ThinPlateSplineTransform
+
+        dst = rng.uniform(10, 110, size=(8, 2))
+        src = dst + rng.normal(0, 4, size=(8, 2))
+        tform = ThinPlateSplineTransform()
+        tform.estimate(src, dst, (120, 150))
+        return tform
+
+    @pytest.mark.parametrize("order", [0, 1, 3])
+    @pytest.mark.parametrize(
+        "image_kind", ["gray_uint8", "gray_uint16", "gray_float", "rgb_uint8"]
+    )
+    def test_tiling_matches_skimage_exactly(self, transform, rng, order, image_kind):
+        """The tiled path must be indistinguishable from warping in one pass.
+
+        skimage's behaviour is not uniform -- at order 0 it preserves the input
+        dtype and range, at higher orders it converts to float in [0, 1] and
+        clips -- so this is checked across both, for every dtype the
+        application loads.
+        """
+        from skimage import transform as tf
+
+        images = {
+            "gray_uint8": (rng.random((120, 150)) * 255).astype(np.uint8),
+            "gray_uint16": (rng.random((120, 150)) * 65535).astype(np.uint16),
+            "gray_float": rng.random((120, 150)),
+            "rgb_uint8": (rng.random((120, 150, 3)) * 255).astype(np.uint8),
+        }
+        image = images[image_kind]
+
+        reference = tf.warp(
+            image,
+            transform,
+            output_shape=(120, 150),
+            mode="constant",
+            cval=0,
+            order=order,
+        )
+        tiled = _warp_tiled(image, transform, (120, 150), order=order, cval=0, tile=32)
+
+        assert tiled.dtype == reference.dtype
+        np.testing.assert_array_equal(tiled, reference)
+
+    @pytest.mark.parametrize("tile", [7, 32, 64, 4096])
+    def test_the_tile_size_does_not_change_the_result(self, transform, rng, tile):
+        """Tiling is a memory strategy; it must not be visible in the output.
+
+        A tile that does not divide the output evenly is included on purpose:
+        the edge tiles are the ones an off-by-one would show up in.
+        """
+        image = (rng.random((120, 150)) * 255).astype(np.uint8)
+
+        reference = _warp_tiled(image, transform, (120, 150), tile=4096)
+        np.testing.assert_array_equal(
+            _warp_tiled(image, transform, (120, 150), tile=tile), reference
+        )
+
+    def test_warp_delegates_small_outputs_to_skimage(self, transform, rng):
+        from skimage import transform as tf
+
+        image = (rng.random((120, 150)) * 255).astype(np.uint8)
+        np.testing.assert_array_equal(
+            warp(image, transform, (120, 150)),
+            tf.warp(
+                image,
+                transform,
+                output_shape=(120, 150),
+                mode="constant",
+                cval=0,
+                order=0,
+            ),
+        )
+
+    def test_warp_defaults_to_the_input_shape(self, transform, rng):
+        image = (rng.random((120, 150)) * 255).astype(np.uint8)
+        assert warp(image, transform).shape == (120, 150)
+
+    def test_an_offset_tile_maps_to_the_same_place(self, transform):
+        """The tile's origin has to be added back before mapping.
+
+        Forgetting it warps every tile as though it were the top-left one,
+        which tiles the source image instead of warping it.
+        """
+        shifted = _ShiftedTransform(transform, 40, 25)
+        local = np.array([[3.0, 4.0]])
+        np.testing.assert_allclose(shifted(local), transform(np.array([[43.0, 29.0]])))
+
+
+class TestTileSizing:
+    """Choosing a tile when the caller does not."""
+
+    def test_an_explicit_tile_is_respected(self):
+        assert _tile_for(object(), 64) == 64
+
+    def test_a_transform_without_control_points_gets_the_default(self):
+        assert _tile_for(object(), None) == DEFAULT_TILE
+
+    def test_more_control_points_means_smaller_tiles(self):
+        """Work per tile scales with the control point count."""
+        from tpsreg.tps import ThinPlateSplineTransform
+
+        def tile_for_n(n):
+            tform = ThinPlateSplineTransform()
+            tform.control_points = np.zeros((n, 2))
+            return _tile_for(tform, None)
+
+        assert tile_for_n(1000) < tile_for_n(10)
+
+    def test_the_tile_stays_within_its_bounds(self):
+        from tpsreg.tps import ThinPlateSplineTransform
+
+        for n in (1, 50, 5000, 100_000):
+            tform = ThinPlateSplineTransform()
+            tform.control_points = np.zeros((n, 2))
+            assert MIN_TILE <= _tile_for(tform, None) <= DEFAULT_TILE

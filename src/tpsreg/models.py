@@ -82,10 +82,14 @@ class DataFormat(Enum):
 
 
 class TransformType(Enum):
-    """Enumeration of available transformation types."""
+    """Enumeration of available transformation types.
+
+    Only the thin-plate spline. An "affine only" variant used to sit here; it
+    dropped the bending term at evaluation time, which is a strictly worse
+    affine than fitting one directly, and it was never what anyone wanted.
+    """
 
     TPS = "tps"
-    TPS_AFFINE = "tps_affine"
 
 
 @dataclass
@@ -145,6 +149,28 @@ class PointSet:
             "No point at index %d on slice %d; nothing removed", point_idx, slice_idx
         )
         return False
+
+    def move_point(self, slice_idx: int, point_idx: int, x: float, y: float) -> bool:
+        """Move an existing point to a new location.
+
+        Returns
+        -------
+        bool
+            True if a point was moved, False if the slice or index does not
+            exist.
+        """
+        points = self.points.get(slice_idx)
+        if points is None or not (0 <= point_idx < len(points)):
+            logger.debug(
+                "No point at index %d on slice %d; nothing moved", point_idx, slice_idx
+            )
+            return False
+
+        points[point_idx] = Point(x, y, slice_idx)
+        logger.debug(
+            "Moved point %d on slice %d to (%s, %s)", point_idx, slice_idx, x, y
+        )
+        return True
 
     def get_points_array(self, slice_idx: int | None = None) -> np.ndarray:
         """Get points as numpy array for a specific slice or all slices."""
@@ -316,6 +342,48 @@ class PointManager:
         self.destination_points.remove_point(slice_idx, point_idx)
         logger.debug("Removed point pair at slice %d, index %d", slice_idx, point_idx)
         return True
+
+    def move_point(
+        self,
+        which: str,
+        slice_idx: int,
+        point_idx: int,
+        x: float,
+        y: float,
+        record_history: bool = True,
+    ) -> bool:
+        """Move one half of a point pair, recording it for undo.
+
+        Only one side moves: dragging a source marker must not drag its
+        partner. Nothing is pushed onto the undo stack when there is no such
+        point, so a drag that lands on nothing cannot fill the history with
+        no-ops.
+
+        Parameters
+        ----------
+        which:
+            "source" or "destination".
+        record_history:
+            Set False for the intermediate steps of a drag, so that the whole
+            gesture is a single undo entry rather than one per mouse motion.
+        """
+        if which not in ("source", "destination"):
+            raise ValueError(f"Unknown point set: {which!r}")
+
+        point_set = self.source_points if which == "source" else self.destination_points
+        existing = point_set.points.get(slice_idx, [])
+        if not (0 <= point_idx < len(existing)):
+            logger.warning(
+                "No %s point at slice %d index %d; nothing moved",
+                which,
+                slice_idx,
+                point_idx,
+            )
+            return False
+
+        if record_history:
+            self._save_state()
+        return point_set.move_point(slice_idx, point_idx, x, y)
 
     def get_point_pairs(
         self, slice_idx: int | None = None
@@ -506,6 +574,19 @@ class PointManager:
             self._history.pop(0)
 
         self._history_index = len(self._history) - 1
+
+    def can_undo(self) -> bool:
+        """True if :meth:`undo` would do something.
+
+        Lets the view grey out the menu entry rather than offering an action
+        that silently does nothing. The condition mirrors :meth:`undo` exactly;
+        keep them in step.
+        """
+        return self._history_index >= 0
+
+    def can_redo(self) -> bool:
+        """True if :meth:`redo` would do something."""
+        return self._history_index + 2 < len(self._history)
 
     def undo(self) -> bool:
         """Revert the most recent change.
@@ -751,7 +832,7 @@ class PointAutoIdentifier:
         destination_image: np.ndarray,
         checkpoint_path: str | None = None,
         **kwargs,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Detect matching points between images using ROMA (MatchAnything).
 
         Args:
@@ -883,6 +964,9 @@ class PointAutoIdentifier:
             logger.error(
                 "Please download weights from: https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view"
             )
+            import traceback
+
+            logger.error(traceback.format_exc())
             return np.array([]), np.array([])
         except Exception as e:
             logger.error("Matchanything point detection failed: %s", e)
@@ -1120,7 +1204,8 @@ class ImageLoader:
         path: Path, modality_name: str = "Intensity"
     ) -> tuple[dict[str, np.ndarray], None]:
         """Load standard image formats with optional modality name."""
-        im = io.imread(path, as_gray=True).astype(np.float32)
+        im = io.imread(path).astype(np.float32)
+        # im = io.imread(path, as_gray=True).astype(np.float32)
 
         # Normalize to 0-255. A constant image (blank slice, saturated
         # detector) has zero range and would otherwise become NaN.
@@ -1482,16 +1567,25 @@ class TransformManager:
         dst_points: np.ndarray,
         transform_type: TransformType,
         output_shape: tuple[int, int],
+        regularization: float | str = 0.0,
     ) -> Any:
-        """Estimate transformation parameters from point correspondences."""
+        """Estimate transformation parameters from point correspondences.
+
+        Parameters
+        ----------
+        regularization:
+            0 to interpolate the control points exactly, a positive number to
+            let the fit miss them in exchange for smoothness, or "auto" to
+            choose by cross-validation. See
+            :meth:`tpsreg.tps.ThinPlateSplineTransform.estimate`.
+        """
         self._check_valid_points(src_points, dst_points)
 
         try:
             # Import TPS here to avoid circular dependency
             from tpsreg.tps import ThinPlateSplineTransform
 
-            affine_only = transform_type == TransformType.TPS_AFFINE
-            tform = ThinPlateSplineTransform(affine_only=affine_only)
+            tform = ThinPlateSplineTransform(regularization=regularization)
             tform.estimate(
                 src_points,
                 dst_points,
@@ -1513,6 +1607,7 @@ class TransformManager:
         transform_type: TransformType,
         output_shape: tuple[int, int],
         n_slices: int | None = None,
+        regularization: float | str = 0.0,
     ) -> dict[int, Any]:
         """Estimate transformations for every slice of a stack.
 
@@ -1535,6 +1630,7 @@ class TransformManager:
         self._check_valid_points(src_points, dst_points)
 
         from tpsreg.tps import ThinPlateSplineTransform
+        from tpsreg.warping import interpolate_fields
 
         # Get unique slices with points
         slice_indices = np.unique(src_points[:, 0]).astype(int)
@@ -1552,7 +1648,7 @@ class TransformManager:
             dst_pts = dst_points[mask, 1:]
 
             tform: ThinPlateSplineTransform = self.estimate_transform(
-                src_pts, dst_pts, transform_type, output_shape
+                src_pts, dst_pts, transform_type, output_shape, regularization
             )
             transforms[slice_idx] = tform
 
@@ -1567,15 +1663,20 @@ class TransformManager:
                     upper_idx = min(upper_slices)
                     alpha = (i - lower_idx) / (upper_idx - lower_idx)
 
-                    # Simple linear interpolation of parameters (not ideal for TPS)
-                    lower_params = transforms[lower_idx].params
-                    upper_params = transforms[upper_idx].params
-                    interp_params = (1 - alpha) * lower_params + alpha * upper_params
+                    # Blend the displacement fields, not the coefficients.
+                    # Neighbouring slices are fitted to their own control
+                    # points, so their coefficient vectors differ in length
+                    # and meaning; only the fields share a grid. Building them
+                    # on demand keeps the keyed slices themselves stored as
+                    # coefficients.
+                    lower_field = transforms[lower_idx].build_field(output_shape)
+                    upper_field = transforms[upper_idx].build_field(output_shape)
 
                     tform = ThinPlateSplineTransform()
-                    tform.params = interp_params
-                    tform._estimated = True
-                    tform.affine_only = transform_type == TransformType.TPS_AFFINE
+                    tform.set_field(
+                        interpolate_fields(lower_field, upper_field, alpha),
+                        size=output_shape,
+                    )
                     transforms[i] = tform
                 elif lower_slices:
                     transforms[i] = transforms[max(lower_slices)]
@@ -1592,18 +1693,25 @@ class TransformManager:
         output_shape: tuple[int, int] | None = None,
         order: int = 0,
     ) -> np.ndarray:
-        """Apply transformation to an image."""
+        """Apply transformation to an image.
+
+        Routed through :func:`tpsreg.warping.warp`, which is
+        ``skimage.transform.warp`` for ordinary images and switches to tiling
+        once the output is large enough that one coordinate array for the
+        whole thing would be the limiting factor.
+        """
         try:
+            from tpsreg.warping import warp as warp_image
+
             if output_shape is None:
                 output_shape = image.shape[:2]
 
-            warped = transform.warp(
+            warped = warp_image(
                 image,
                 tform,
                 output_shape=output_shape,
-                mode="constant",
-                cval=0,
                 order=order,
+                cval=0,
             )
 
             logger.debug("Applied transform to image of shape %s", image.shape)

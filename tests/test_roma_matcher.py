@@ -315,6 +315,141 @@ class TestPrepareImage:
         out = self._prepared(np.zeros((8, 10, 3), dtype=np.uint8))
         assert out.flags["C_CONTIGUOUS"]
 
+    @pytest.mark.parametrize(
+        "image",
+        [
+            np.full((12, 16), 200, dtype=np.uint8),
+            np.zeros((6, 6, 1), dtype=np.uint8),
+            np.zeros((6, 6, 4), dtype=np.uint8),
+            np.full((5, 5), 3.5, dtype=np.float64),
+        ],
+    )
+    def test_output_is_float32(self, fake_torch, image):
+        """torch.from_numpy adopts the array's dtype.
+
+        The model needs float32, and a float64 input would otherwise produce a
+        double tensor and a dtype mismatch inside the network. Asserting it on
+        the array means the guarantee is checked without torch installed.
+        """
+        fake_torch()
+        assert self._prepared(image).dtype == np.float32
+
+
+class _StubModule:
+    """Mimics the nn.Module surface force_float32 relies on.
+
+    Modelled on the real structure: ``amp`` flags, registered children reached
+    by ``modules()``, and a backbone parked in a plain list where PyTorch
+    cannot see it.
+    """
+
+    def __init__(self, name, amp=False, children=(), hidden=None):
+        self.name = name
+        self.amp = amp
+        self._children = list(children)
+        self.dtype = "float16" if amp else "float32"
+        if hidden is not None:
+            # Exactly how CNNandDinov2 hides DINOv2 from DDP.
+            self.dinov2_vitl14 = [hidden]
+
+    def modules(self):
+        yield self
+        for child in self._children:
+            yield from child.modules()
+
+    def state_dict(self):
+        return {}
+
+    def eval(self):
+        return self
+
+    def to(self, device):
+        self.device = device
+        return self
+
+    def float(self):
+        self.dtype = "float32"
+        for child in self._children:
+            child.float()
+        return self
+
+
+def build_roma_like_model():
+    """A stand-in with the same precision trap as the real ROMA model."""
+    dinov2 = _StubModule("dinov2", amp=True)  # explicitly cast to fp16
+    encoder = _StubModule("encoder", amp=True, hidden=dinov2)
+    decoder = _StubModule("decoder", amp=True)
+    return _StubModule("matcher", amp=True, children=[encoder, decoder]), dinov2
+
+
+class TestForceFloat32:
+    """The fix for the off-CUDA precision mismatch."""
+
+    def test_amp_is_disabled_everywhere(self):
+        """A leftover amp flag keeps casting inputs to float16."""
+        model, _ = build_roma_like_model()
+        roma_matcher.force_float32(model)
+
+        assert all(module.amp is False for module in model.modules())
+
+    def test_registered_modules_become_float32(self):
+        model, _ = build_roma_like_model()
+        roma_matcher.force_float32(model)
+
+        assert all(module.dtype == "float32" for module in model.modules())
+
+    def test_the_list_hidden_backbone_is_cast_too(self):
+        """This is the whole bug.
+
+        DINOv2 is held in a plain list so PyTorch never sees it. model.float()
+        alone leaves it in float16 while everything else is float32, which is
+        precisely the mismatch that reaches the decoder.
+        """
+        model, dinov2 = build_roma_like_model()
+        assert dinov2.dtype == "float16"
+
+        roma_matcher.force_float32(model)
+
+        assert dinov2.dtype == "float32", (
+            "the list-held DINOv2 backbone was not cast; float32 activations "
+            "would meet float16 weights"
+        )
+
+    def test_model_float_alone_would_miss_the_backbone(self):
+        """Shows why the extra traversal is needed, not just model.float()."""
+        model, dinov2 = build_roma_like_model()
+        model.float()
+        assert dinov2.dtype == "float16"
+
+    def test_returns_the_model(self):
+        model, _ = build_roma_like_model()
+        assert roma_matcher.force_float32(model) is model
+
+    def test_is_idempotent(self):
+        model, dinov2 = build_roma_like_model()
+        roma_matcher.force_float32(model)
+        roma_matcher.force_float32(model)
+
+        assert dinov2.dtype == "float32"
+        assert all(module.amp is False for module in model.modules())
+
+    def test_plain_attributes_are_left_alone(self):
+        """Only lists of modules are touched, not arbitrary state."""
+        model, _ = build_roma_like_model()
+        model.sample_thresh = 0.05
+        model.scales = ["16", "8", "4", "2", "1"]
+
+        roma_matcher.force_float32(model)
+
+        assert model.sample_thresh == 0.05
+        assert model.scales == ["16", "8", "4", "2", "1"]
+
+    def test_module_detection_rejects_lookalikes(self):
+        assert not roma_matcher._looks_like_module("a string")
+        assert not roma_matcher._looks_like_module(42)
+        assert not roma_matcher._looks_like_module(["16", "8"])
+        assert roma_matcher._looks_like_module(_StubModule("m"))
+
 
 class TestApplyMatcher:
     """The wiring between the model output and the returned points."""
@@ -554,6 +689,71 @@ class TestDetectPointsConvenience:
 
         assert applied["ransac_filter"] is True
         assert applied["ransac_method"] == "deformable"
+
+
+class TestCreateMatcherPrecision:
+    """create_matcher applies the float32 fix on exactly the right devices."""
+
+    @pytest.fixture
+    def built(self, monkeypatch, tmp_path):
+        """Stand in for everything create_matcher needs, returning the model."""
+        checkpoint = tmp_path / "roma.ckpt"
+        checkpoint.write_bytes(b"not a real checkpoint")
+
+        model, dinov2 = build_roma_like_model()
+
+        class FakePLLoFTR:
+            def __init__(self, config, pretrained_ckpt=None, test_mode=False):
+                self.matcher = model
+
+        fake_module = types.ModuleType(
+            "tpsreg.Matchanything.src.lightning.lightning_loftr"
+        )
+        fake_module.PL_LoFTR = FakePLLoFTR
+        monkeypatch.setitem(
+            sys.modules,
+            "tpsreg.Matchanything.src.lightning.lightning_loftr",
+            fake_module,
+        )
+        monkeypatch.setattr(
+            roma_matcher,
+            "get_config",
+            lambda checkpoint_path=None: (object(), {"ckpt_path": str(checkpoint)}),
+        )
+
+        def build(device):
+            monkeypatch.setattr(
+                roma_matcher, "select_device", lambda preferred=None: device
+            )
+            return roma_matcher.create_matcher(checkpoint_path=checkpoint), dinov2
+
+        return build
+
+    def test_cpu_gets_float32_throughout(self, built):
+        """The reported bug: a precision mix off CUDA."""
+        matcher, dinov2 = built("cpu")
+
+        assert dinov2.dtype == "float32"
+        assert all(module.amp is False for module in matcher.modules())
+
+    def test_mps_gets_float32_throughout(self, built):
+        """MPS supports fp16, but CUDA autocast is still inert there, so the
+        two halves of the model would still disagree."""
+        matcher, dinov2 = built("mps")
+
+        assert dinov2.dtype == "float32"
+        assert all(module.amp is False for module in matcher.modules())
+
+    def test_cuda_keeps_mixed_precision(self, built):
+        """On CUDA the two fp16 routes agree, and fp16 is the fast path."""
+        matcher, dinov2 = built("cuda")
+
+        assert dinov2.dtype == "float16"
+        assert any(module.amp for module in matcher.modules())
+
+    def test_device_is_recorded_either_way(self, built):
+        matcher, _ = built("cpu")
+        assert matcher._tpsreg_device == "cpu"
 
 
 class TestCreateMatcherGuards:

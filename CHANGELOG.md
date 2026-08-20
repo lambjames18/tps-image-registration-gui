@@ -4,6 +4,193 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Fit quality is shown live while placing points, rather than only on demand.
+  Each marker carries its leave-one-out residual, is coloured on a scale from
+  good to bad, and the status bar shows the median and the worst point.
+  Recomputed when a pair is added or removed and when a drag lands -- not
+  during the drag, where the numbers would be noise.
+
+  This is affordable because of the closed form added with regularization:
+  a single solve rather than one refit per point, measured at 0.2 ms for 25
+  control points and 1.5 ms for 100, against 15 ms and 62 ms for the
+  refitting version.
+
+  Nothing is shown below nine control points. Leave-one-out asks the
+  remaining points to predict the held-out one, and with fewer than that they
+  cannot: every residual comes out large and a genuinely bad point does not
+  stand out. Showing those numbers while someone places their first few
+  points would be alarming and wrong.
+- Optional smoothing of the spline (regularization), off by default. Set it
+  from the **Smoothing** selector in the top bar: *Off*, *Automatic*, or a
+  number.
+
+  Exact interpolation is not the same as an accurate transform. A thin-plate
+  spline passes through every control point, which means it also reproduces
+  every click error exactly, contorting itself to honour mistakes. Smoothing
+  relaxes that, buying a better fit to the real deformation with the slack.
+
+  *Automatic* chooses the strength by leave-one-out cross-validation, which
+  matters because the number is in units nobody has an intuition for and the
+  right value depends on how noisy the clicks are relative to the deformation.
+  On synthetic data with a known answer and 1.5 px of click noise it roughly
+  halved the error against the true deformation; with clean points it selects
+  zero and changes nothing.
+
+  The cross-validation uses a closed form rather than refitting once per
+  point: for a linear smoother the leave-one-out residual is `w_i / M_ii`
+  from a single fit. Verified against brute-force refitting to 1e-13, at a
+  fourteenth of the cost for 16 control points and better above that.
+
+  The strength is normalised by the kernel magnitude so the same number means
+  roughly the same thing at any image size — within about twofold across a
+  200-fold change in coordinates, since `r²log(r²)` is not scale-homogeneous.
+
+  New: `tpsreg.tps.loocv_residuals`, `tpsreg.tps.select_regularization`,
+  `ThinPlateSplineTransform(regularization=...)`, and
+  `ApplicationPresenter.set_regularization`.
+- Registration quality metrics (`tpsreg.metrics`), reachable from
+  **View → Check registration quality**.
+
+  The obvious check — how far the fit lands from each control point — says
+  nothing about a thin-plate spline. It interpolates, so residuals come out
+  around 1e-12 whether the correspondences are good or catastrophically
+  wrong; a point clicked 40 px from its true partner is indistinguishable
+  from a perfect one. What the report gives instead:
+
+  - **Leave-one-out residuals.** Refit without each point and see how far the
+    fit misses it, which is where a bad correspondence does show up. Points
+    that disagree with the rest are flagged and drawn with a larger
+    warning-coloured ring, so a number in a report can be found on a canvas
+    holding several dozen points. Needs roughly nine well-spread points to be
+    meaningful — below that the sparsity swamps the signal, which is
+    documented and tested rather than left to be discovered.
+  - **Jacobian determinant.** Negative where the mapping folds over itself,
+    producing mirrored patches in the warp. This failure is invisible to any
+    per-point measure, because the control points on either side of a fold
+    are still matched exactly.
+  - **Bending energy**, coverage, and a one-line summary for the status bar.
+
+  The report is discarded whenever the points change, since a report about a
+  different point set is worse than none.
+- `ThinPlateSplineTransform.map` evaluates the spline directly at arbitrary
+  coordinates, in double precision, with no grid involved. Mapping 40 points
+  went from 66 s and 134 MB to 1 ms and 0.07 MB, because `transform_coords`
+  used to build the whole dense field and then index it.
+- `ThinPlateSplineTransform.build_field`, `set_field`, `clear_field`, `field`,
+  and `field_step`: the dense field as a cache, at a chosen resolution. A
+  quarter-resolution field costs a few hundredths of a pixel for a sixteenth
+  of the memory, and the error falls away quadratically as it gets finer.
+- `tpsreg.warping.warp`, which warps large outputs a tile at a time.
+  `skimage.transform.warp` builds one coordinate array for the entire output,
+  16 bytes per pixel — 6.4 GB for a 400 Mpx image before any pixels are read.
+  Tiling bounds that by the tile, and turns out to be faster as well.
+- `tpsreg.warping.interpolate_fields`, for blending two displacement fields.
+- Drag a control point to adjust it. Correcting a click that landed slightly
+  off previously meant deleting the pair and re-placing both halves. The whole
+  drag is one undo step, and only the marker being dragged moves.
+- Control points are checked before a transform is estimated. Problems that
+  make the fit impossible — too few points, coincident points, points all on
+  one line, a half-finished pair — are reported by name and block estimation;
+  problems that only degrade the result, such as points clustered in one part
+  of the image, warn and can be dismissed. New `tpsreg.validation` module,
+  with tests pinning what it calls an error to what the solver actually
+  refuses.
+- "Link views" checkbox: zooming or scrolling either panel does the same to
+  the other, so a feature stays in the same place in both.
+- Checkerboard and difference comparison modes in the 2D preview, alongside the
+  existing wipe. New `tpsreg.overlays` module holds the compositing, so it can
+  be tested without a display.
+- File dialogs remember the folder the last one used, instead of starting from
+  the working directory every time.
+- A `warning` colour in both palettes, for drawing attention to a flagged
+  control point.
+- `PointManager.move_point`, `PointSet.move_point`, `PointManager.can_undo`,
+  `PointManager.can_redo`, and the presenter methods that wrap them
+  (`move_point`, `commit_point_move`, `find_point_near`, `check_points`,
+  `assess_transform`, `can_undo`, `can_redo`).
+
+### Removed
+
+- **The "TPS affine" transform type.** It dropped the bending term at
+  evaluation time, which is a strictly worse affine than fitting one
+  directly. With it gone the transform-type dialog offered a choice of one,
+  so that has gone too: applying, exporting and checking quality no longer
+  interrupt with a modal. `TransformType.TPS` remains, so project files and
+  the API are unaffected.
+
+### Changed
+
+- **Breaking:** a `ThinPlateSplineTransform` is now its fitted coefficients
+  rather than a dense displacement field, and `.params` returns those
+  coefficients. The field became a resolution-configurable cache, built only
+  when something asks for it (`build_field`, or `estimate(build_field=True)`).
+
+  Fitting used to evaluate the spline over the entire destination grid, so the
+  cost of a transform scaled with the image rather than with the control
+  points: a 400 Mpx stitched image meant a 3.2 GB transform, and 1600 Mpx
+  meant 12.8 GB, which simply would not run. The coefficients are 0.7 KB
+  whatever the grid.
+
+  Exported transforms are correspondingly small, and CSV and TXT export now
+  work at all — `np.savetxt` refuses a 3D array, so those two formats had
+  always failed for a TPS despite being offered in the export dialog.
+
+  The one place the dense form is still the working representation is
+  interpolating between slices of a 3D stack: neighbouring slices are fitted
+  to different control points, so their coefficients cannot be blended, but
+  their fields share a grid and can. That path now says so explicitly and
+  takes a `downsample` argument.
+- Undo and Redo are greyed out when there is nothing to undo or redo, rather
+  than being permanently enabled and silently doing nothing.
+- Control points are placed on mouse release rather than press, so that a press
+  landing on an existing marker can start a drag instead. A press that grabs a
+  marker and releases without moving leaves it alone, so a slightly misjudged
+  click near a point no longer stacks a second one on top of it.
+
+### Fixed
+
+- The busy indicator never animated. It was driven by a Tk timer, which only
+  runs while the event loop does — and during a synchronous operation the loop
+  never runs, so the bar sat frozen. It also stepped every 1 ms, asking for a
+  thousand redraws a second, and any redraw during an operation stopped it
+  outright because `update_display` unconditionally cleared it.
+
+  The bar is now stepped by hand wherever the application reports progress,
+  chiefly on a status change, and flushed with `update_idletasks`. It no
+  longer depends on the event loop at all. The indicator nests, so an inner
+  operation cannot stop an outer one, and unbalanced stops cannot drive it
+  negative and swallow the next start.
+
+  Note that a single long call — a large warp, model inference — still blocks
+  between reported points; the bar advances *between* steps, not within one.
+- Every TPS warp was offset by one pixel in both axes. The dense field was
+  sampled on a 1-based grid (`linspace(1, width, width)`) while control points
+  and queries are 0-based, so a transform fitted to identical point sets moved
+  the image by (1, 1) instead of leaving it alone. scikit-image's own affine
+  on the same points was exact, which is what the comparison should always
+  have been against. Two existing tests had encoded the offset as expected
+  behaviour rather than questioning it.
+- Coordinates were truncated to whole pixels before lookup, so sub-pixel
+  warping was impossible no matter what interpolation order was requested.
+- Collinear control points produced a garbage transform instead of an error on
+  Linux and Windows. The solver relied on `np.linalg.solve` raising
+  `LinAlgError` for a singular system, and whether it does depends on the
+  LAPACK build: macOS Accelerate raised, the OpenBLAS builds on the CI runners
+  returned a nonsense result for the identical points. `estimate` now tests the
+  control point geometry directly — costing microseconds, and giving the same
+  answer everywhere — and verifies the solution by substituting it back, so an
+  inaccurate solve is caught whatever the cause.
+- Clicks were recorded up to one image pixel away from where they were aimed
+  when zoomed past 100%. The canvas-to-image conversion divided the event
+  position and the canvas origin separately and truncated each, so the last
+  screen pixel of every image cell reported the next cell along. The cursor
+  readout shared the bug and now uses the same conversion as the click, so the
+  two can no longer disagree.
+
 ## [0.2.0] - 2026-08-03
 
 The project is now an installable Python package with a test suite and CI.

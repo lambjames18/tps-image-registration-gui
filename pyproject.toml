@@ -61,6 +61,7 @@ matchanything = [
     "loguru>=0.7",
     "yacs>=0.1.8",
     "opencv-python-headless>=4.8",
+    "joblib",
 ]
 
 [project.scripts]
@@ -77,6 +78,8 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "pre-commit>=3.7",
+    # Used by tests/test_workflows.py to parse the GitHub Actions files.
+    "pyyaml>=6.0",
 ]
 
 [tool.hatch.build.targets.wheel]

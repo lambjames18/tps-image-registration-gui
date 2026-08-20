@@ -200,6 +200,394 @@ class TestPointEditing:
         np.testing.assert_array_equal(dst, [[20, 22], [40, 42]])
 
 
+class TestMovingPoints:
+    """Dragging a marker, as the canvas drives it."""
+
+    @pytest.fixture
+    def with_pair(self, loaded):
+        loaded.add_point("source", 10, 12)
+        loaded.add_point("destination", 20, 22)
+        return loaded
+
+    def test_moving_a_source_point(self, with_pair):
+        assert with_pair.move_point("source", 0, 15, 18) is True
+
+        src, dst = with_pair.get_points()
+        np.testing.assert_array_equal(src, [[15, 18]])
+        np.testing.assert_array_equal(dst, [[20, 22]])
+
+    def test_moving_a_destination_point(self, with_pair):
+        assert with_pair.move_point("destination", 0, 25, 27) is True
+
+        src, dst = with_pair.get_points()
+        np.testing.assert_array_equal(src, [[10, 12]])
+        np.testing.assert_array_equal(dst, [[25, 27]])
+
+    def test_a_move_outside_the_image_is_refused(self, with_pair):
+        assert with_pair.move_point("source", 0, 9999, 9999) is False
+        np.testing.assert_array_equal(with_pair.get_points()[0], [[10, 12]])
+
+    def test_moving_a_point_that_does_not_exist_is_refused(self, with_pair):
+        assert with_pair.move_point("source", 7, 15, 18) is False
+
+    def test_an_unknown_side_is_refused_not_raised(self, with_pair, fake_view):
+        """The canvas type comes from a binding; a typo must not crash the app."""
+        assert with_pair.move_point("middle", 0, 15, 18) is False
+        assert fake_view.errors
+
+    def test_moving_before_an_image_is_loaded_is_refused(self, presenter):
+        assert presenter.move_point("source", 0, 5, 5) is False
+
+    def test_a_move_marks_the_project_modified(self, with_pair):
+        with_pair.project_manager.is_modified = False
+        with_pair.move_point("source", 0, 15, 18)
+        assert with_pair.project_manager.is_modified is True
+
+    def test_a_move_tells_the_view_to_redraw(self, with_pair, fake_view):
+        before = fake_view.calls.count("points_changed")
+        with_pair.move_point("source", 0, 15, 18)
+        assert fake_view.calls.count("points_changed") > before
+
+    def test_a_transient_move_still_redraws(self, with_pair, fake_view):
+        """The marker has to follow the cursor while the drag is in progress."""
+        before = fake_view.calls.count("points_changed")
+        with_pair.move_point("source", 0, 15, 18, transient=True)
+        assert fake_view.calls.count("points_changed") > before
+        np.testing.assert_array_equal(with_pair.get_points()[0], [[15, 18]])
+
+    def test_a_transient_move_leaves_the_project_clean(self, with_pair):
+        """Intermediate drag frames must not rewrite the points file."""
+        with_pair.project_manager.is_modified = False
+        with_pair.move_point("source", 0, 15, 18, transient=True)
+        assert with_pair.project_manager.is_modified is False
+
+    def test_committing_marks_the_project_modified(self, with_pair):
+        with_pair.project_manager.is_modified = False
+        with_pair.move_point("source", 0, 15, 18, transient=True)
+        with_pair.commit_point_move()
+        assert with_pair.project_manager.is_modified is True
+
+    def test_a_whole_drag_undoes_in_one_step(self, with_pair):
+        """The gesture is one edit, not one per mouse motion."""
+        with_pair.move_point("source", 0, 11, 13)
+        for step in range(14, 30):
+            with_pair.move_point("source", 0, step, step, transient=True)
+        with_pair.commit_point_move()
+
+        with_pair.undo()
+        np.testing.assert_array_equal(with_pair.get_points()[0], [[10, 12]])
+
+    def test_a_destination_move_respects_matched_resolutions(self, loaded):
+        """Displayed destination coordinates are at the source scale.
+
+        add_point converts them back before storing, and a move has to make
+        exactly the same conversion or dragging a point would teleport it.
+        """
+        loaded.set_image_resolutions(1.0, 2.0)
+        loaded.match_resolutions = True
+
+        loaded.add_point("source", 10, 12)
+        loaded.add_point("destination", 20, 24)
+        stored_after_add = loaded.get_points()[1].copy()
+
+        loaded.move_point("destination", 0, 20, 24)
+        np.testing.assert_array_equal(loaded.get_points()[1], stored_after_add)
+
+
+class TestFindingPointsNearACursor:
+    """Hit testing, which decides whether a press grabs a marker."""
+
+    @pytest.fixture
+    def with_points(self, loaded):
+        for x, y in ((10, 10), (30, 30), (50, 20)):
+            loaded.add_point("source", x, y)
+            loaded.add_point("destination", x + 1, y + 1)
+        return loaded
+
+    def test_a_press_on_a_marker_finds_it(self, with_points):
+        assert with_points.find_point_near("source", 30, 30, radius=8) == 1
+
+    def test_a_press_near_a_marker_finds_it(self, with_points):
+        assert with_points.find_point_near("source", 33, 32, radius=8) == 1
+
+    def test_a_press_in_empty_space_finds_nothing(self, with_points):
+        assert with_points.find_point_near("source", 200, 200, radius=8) is None
+
+    def test_just_outside_the_radius_finds_nothing(self, with_points):
+        assert with_points.find_point_near("source", 40, 30, radius=8) is None
+
+    def test_the_nearest_marker_wins(self, with_points):
+        """Two markers within reach: the closer one is the one being grabbed."""
+        assert with_points.find_point_near("source", 48, 21, radius=40) == 2
+
+    def test_destination_points_are_searched_separately(self, with_points):
+        assert with_points.find_point_near("destination", 31, 31, radius=4) == 1
+
+    def test_no_points_at_all_finds_nothing(self, loaded):
+        assert loaded.find_point_near("source", 10, 10, radius=8) is None
+
+    def test_hit_testing_respects_matched_resolutions(self, loaded):
+        """Markers are drawn at the source scale, so hits are tested there too."""
+        loaded.set_image_resolutions(1.0, 2.0)
+        loaded.add_point("source", 10, 10)
+        loaded.add_point("destination", 10, 10)
+
+        loaded.match_resolutions = True
+        # Stored at 10,10 but drawn at 20,20; a press at 20,20 must hit.
+        assert loaded.find_point_near("destination", 20, 20, radius=3) == 0
+        assert loaded.find_point_near("destination", 10, 10, radius=3) is None
+
+
+class TestCheckingPointsBeforeEstimating:
+    """The presenter's wrapper around the validation checks."""
+
+    def test_no_points_is_reported_as_an_error(self, loaded):
+        issues = loaded.check_points(TransformType.TPS)
+        assert issues
+        assert any(issue.is_error for issue in issues)
+
+    def test_good_points_pass(self, loaded):
+        for x, y in ((5, 5), (45, 6), (6, 45), (44, 44), (25, 12), (12, 26)):
+            loaded.add_point("source", x, y)
+            loaded.add_point("destination", x + 1, y + 1)
+
+        assert loaded.check_points(TransformType.TPS) == []
+
+    def test_duplicate_points_are_reported(self, loaded):
+        for x, y in ((5, 5), (45, 6), (6, 45), (44, 44), (25, 12), (5, 5)):
+            loaded.add_point("source", x, y)
+            loaded.add_point("destination", x + 1, y + 1)
+
+        codes = {issue.code for issue in loaded.check_points(TransformType.TPS)}
+        assert "duplicate_source_points" in codes
+
+    def test_coverage_uses_the_loaded_image_size(self, loaded):
+        """Clustered points only look clustered relative to the image."""
+        for x, y in ((2, 2), (5, 2), (2, 5), (5, 5), (3, 4), (4, 3)):
+            loaded.add_point("source", x, y)
+            loaded.add_point("destination", x, y)
+
+        codes = {issue.code for issue in loaded.check_points(TransformType.TPS)}
+        assert "poor_coverage" in codes
+
+    def test_defaults_to_tps_when_no_type_is_given(self, loaded):
+        assert loaded.check_points() == loaded.check_points(TransformType.TPS)
+
+    def test_checking_without_an_image_still_works(self, presenter):
+        """The dialog may be reached before anything is loaded."""
+        issues = presenter.check_points(TransformType.TPS)
+        assert {issue.code for issue in issues} == {"no_points"}
+
+
+class TestUndoAvailability:
+    """What the Edit menu should be showing."""
+
+    def test_nothing_to_undo_on_a_fresh_project(self, presenter):
+        assert presenter.can_undo() is False
+        assert presenter.can_redo() is False
+
+    def test_placing_a_point_makes_undo_available(self, loaded):
+        loaded.add_point("source", 10, 12)
+        assert loaded.can_undo() is True
+
+    def test_undoing_makes_redo_available(self, loaded):
+        loaded.add_point("source", 10, 12)
+        loaded.undo()
+        assert loaded.can_redo() is True
+
+
+class TestAssessingTheTransform:
+    """The quality report the presenter assembles."""
+
+    @staticmethod
+    def _grid(extent=40.0, n=4):
+        axis = np.linspace(4.0, extent, n)
+        return np.stack(np.meshgrid(axis, axis), -1).reshape(-1, 2)
+
+    def _place(self, presenter, src, dst):
+        for (sx, sy), (dx, dy) in zip(src, dst, strict=True):
+            presenter.add_point("source", int(sx), int(sy))
+            presenter.add_point("destination", int(dx), int(dy))
+
+    def test_no_points_gives_no_report(self, loaded):
+        assert loaded.assess_transform(TransformType.TPS) is None
+
+    def test_a_clean_fit_reports_no_outliers(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+
+        quality = loaded.assess_transform(TransformType.TPS)
+        assert quality is not None
+        assert not quality.outliers.any()
+        assert not quality.has_folds
+
+    def test_a_misplaced_point_is_flagged(self, loaded):
+        grid = self._grid()
+        src = grid.copy()
+        src[6] = src[6] + np.array([18.0, -14.0])
+        self._place(loaded, src, grid)
+
+        quality = loaded.assess_transform(TransformType.TPS)
+        assert quality.outliers[6]
+        assert quality.worst_point == 6
+
+    def test_coverage_comes_from_the_loaded_image(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+
+        quality = loaded.assess_transform(TransformType.TPS)
+        assert quality.coverage is not None
+        assert 0 < quality.coverage <= 1
+
+    def test_the_expensive_part_can_be_skipped(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+
+        quality = loaded.assess_transform(
+            TransformType.TPS, include_leave_one_out=False
+        )
+        assert quality.leave_one_out.size == 0
+
+    def test_a_degenerate_fit_reports_the_error_rather_than_raising(
+        self, loaded, fake_view
+    ):
+        """Collinear points cannot be fitted; the view should hear about it."""
+        for i in range(5):
+            loaded.add_point("source", 5 + i * 5, 5 + i * 5)
+            loaded.add_point("destination", 5 + i * 5, 5 + i * 5)
+
+        assert loaded.assess_transform(TransformType.TPS) is None
+        assert fake_view.errors
+
+
+class TestLiveResiduals:
+    """Per-point fit quality, cheap enough to recompute on every edit."""
+
+    @staticmethod
+    def _grid(n=4, extent=40.0):
+        axis = np.linspace(4.0, extent, n)
+        return np.stack(np.meshgrid(axis, axis), -1).reshape(-1, 2)
+
+    def _place(self, presenter, src, dst):
+        for (sx, sy), (dx, dy) in zip(src, dst, strict=True):
+            presenter.add_point("source", int(sx), int(sy))
+            presenter.add_point("destination", int(dx), int(dy))
+
+    def test_no_points_gives_nothing(self, loaded):
+        assert loaded.live_residuals() is None
+
+    def test_too_few_points_gives_nothing(self, loaded):
+        """Below the threshold the numbers are misleading, not merely noisy."""
+        from tpsreg import metrics
+
+        grid = self._grid()
+        self._place(loaded, grid[:4], grid[:4])
+        assert len(loaded.get_points()[0]) < metrics.MIN_POINTS_FOR_RESIDUALS
+        assert loaded.live_residuals() is None
+
+    def test_one_residual_per_point(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+
+        residuals = loaded.live_residuals()
+        assert residuals is not None
+        assert residuals.shape == (len(grid),)
+
+    def test_a_consistent_field_has_small_residuals(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+        assert float(np.max(loaded.live_residuals())) < 1e-6
+
+    def test_a_misplaced_point_stands_out(self, loaded):
+        grid = self._grid()
+        self._place(loaded, grid, grid)
+        loaded.move_point("source", 5, 38, 8)
+
+        residuals = loaded.live_residuals()
+        assert int(np.argmax(residuals)) == 5
+
+    def test_it_agrees_with_the_refitting_version(self, loaded):
+        """The fast path and the thorough one must not disagree.
+
+        metrics.leave_one_out_residuals refits once per point; this uses the
+        closed form. They are the same quantity and are allowed to differ only
+        by the point-set-dependent normalisation, which is nil at zero
+        smoothing.
+        """
+        from tpsreg import metrics
+
+        grid = self._grid()
+        src = grid.copy()
+        src[5] = src[5] + np.array([12.0, -9.0])
+        self._place(loaded, src, grid)
+
+        fast = loaded.live_residuals()
+        thorough = metrics.leave_one_out_residuals(*loaded.get_points())
+        np.testing.assert_allclose(fast, thorough, rtol=1e-6, atol=1e-9)
+
+    def test_it_is_fast_enough_to_run_on_every_click(self, loaded):
+        """The whole premise of showing it live."""
+        import time
+
+        grid = self._grid(n=6, extent=45.0)
+        self._place(loaded, grid, grid)
+
+        start = time.perf_counter()
+        for _ in range(10):
+            loaded.live_residuals()
+        elapsed = (time.perf_counter() - start) / 10
+
+        assert elapsed < 0.05, f"{elapsed * 1000:.1f} ms is too slow for live use"
+
+
+class TestSmoothing:
+    """The regularization setting the view drives."""
+
+    def test_off_by_default(self, presenter):
+        """It changes results, so it should be asked for."""
+        assert presenter.regularization == 0.0
+
+    def test_a_strength_can_be_set(self, presenter):
+        presenter.set_regularization(0.05)
+        assert presenter.regularization == 0.05
+
+    def test_auto_is_accepted(self, presenter):
+        presenter.set_regularization("auto")
+        assert presenter.regularization == "auto"
+
+    def test_auto_is_case_insensitive(self, presenter):
+        presenter.set_regularization("Auto")
+        assert presenter.regularization == "auto"
+
+    def test_a_negative_strength_is_refused(self, presenter):
+        with pytest.raises(ValueError, match="must not be negative"):
+            presenter.set_regularization(-1.0)
+
+    def test_an_unknown_word_is_refused(self, presenter):
+        with pytest.raises(ValueError, match="Unknown regularization"):
+            presenter.set_regularization("lots")
+
+    def test_a_new_project_turns_it_off_again(self, presenter):
+        presenter.set_regularization("auto")
+        presenter.new_project()
+        assert presenter.regularization == 0.0
+
+    def test_it_reaches_the_estimated_transform(self, loaded):
+        """The setting is useless if it does not get as far as the fit."""
+        axis = np.linspace(4.0, 40.0, 4)
+        grid = np.stack(np.meshgrid(axis, axis), -1).reshape(-1, 2)
+        for x, y in grid:
+            loaded.add_point("source", int(x), int(y))
+            loaded.add_point("destination", int(x) + 1, int(y))
+
+        loaded.set_regularization(0.25)
+        src, dst = loaded.get_points()
+        tform = loaded.transform_manager.estimate_transform(
+            src, dst, TransformType.TPS, (50, 50), loaded.regularization
+        )
+        assert tform.effective_regularization == 0.25
+
+
 class TestDisplayState:
     """View mode, slice and resolution settings."""
 
@@ -261,9 +649,7 @@ class TestTransforms:
 
     def test_affine_transform_also_works(self, loaded):
         self._add_grid(loaded, jitter=2.0)
-        warped, _, _ = loaded.apply_transform(
-            TransformType.TPS_AFFINE, return_data=True
-        )
+        warped, _, _ = loaded.apply_transform(TransformType.TPS, return_data=True)
         assert np.all(np.isfinite(warped))
 
     def test_preview_reaches_the_view(self, loaded, fake_view):

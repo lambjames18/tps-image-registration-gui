@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from tpsreg import metrics, validation
 from tpsreg.models import (
     DataFormat,
     ImageData,
@@ -24,6 +25,7 @@ from tpsreg.models import (
     TransformManager,
     TransformType,
 )
+from tpsreg.tps import loocv_residuals
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -69,6 +71,12 @@ class ApplicationPresenter:
         self.clahe_active_dest = False
         self.match_resolutions = False
 
+        #: Smoothing strength for the spline. 0 interpolates the control
+        #: points exactly, which is what this has always done; "auto" picks a
+        #: strength by cross-validation. Off by default: it changes results,
+        #: so it should be asked for.
+        self.regularization: float | str = 0.0
+
         # View reference (will be set by view)
         self.view = None
 
@@ -103,6 +111,7 @@ class ApplicationPresenter:
             self.clahe_active_source = False
             self.clahe_active_dest = False
             self.match_resolutions = False
+            self.regularization = 0.0
 
             # Clear paths
             self.source_points_path = None
@@ -578,6 +587,293 @@ class ApplicationPresenter:
             logger.error("Failed to remove point: %s", e)
             self._notify_view_error(f"Failed to remove point: {e!s}, ({parse_error()})")
 
+    def move_point(
+        self, source: str, point_index: int, x: int, y: int, transient: bool = False
+    ) -> bool:
+        """Move an existing control point to a new location.
+
+        This is what dragging a marker calls. Before it existed the only way to
+        nudge a slightly misplaced click was to delete the pair and re-place
+        both halves.
+
+        Parameters
+        ----------
+        source:
+            "source" or "destination".
+        point_index:
+            Index of the point within the current slice.
+        x, y:
+            New position, in the same displayed coordinates that
+            :meth:`add_point` takes.
+        transient:
+            True for the intermediate steps of a drag. A drag fires a move for
+            every mouse motion, and recording each one would push the rest of
+            the undo history off the end of the stack and rewrite the points
+            file dozens of times per second. Transient moves update the points
+            and redraw, nothing more; the caller finishes with
+            :meth:`commit_point_move`.
+
+        Returns
+        -------
+        bool
+            True if the point moved.
+        """
+        try:
+            if source not in ("source", "destination"):
+                raise ValueError(f"Unknown point target: {source!r}")
+
+            image = self.source_image if source == "source" else self.destination_image
+            if image is None:
+                logger.warning(
+                    "Cannot move a %s point before an image is loaded", source
+                )
+                return False
+
+            if not self.is_point_in_bounds(source, x, y):
+                logger.warning(
+                    "Ignoring %s point move to (%d, %d): outside the image bounds",
+                    source,
+                    x,
+                    y,
+                )
+                return False
+
+            # Destination coordinates arrive at the source scale when
+            # resolutions are matched, exactly as in add_point.
+            if source == "destination" and self.match_resolutions:
+                src_res, dst_res = self.get_resolutions()
+                res_scale = src_res / dst_res
+                x, y = int(x * res_scale), int(y * res_scale)
+
+            moved = self.point_manager.move_point(
+                source,
+                self.current_slice,
+                point_index,
+                x,
+                y,
+                record_history=not transient,
+            )
+            if not moved:
+                return False
+
+            if not transient:
+                self._save_points()
+                self.project_manager.mark_modified()
+            self._notify_view_points_changed()
+            return True
+
+        except Exception as e:
+            logger.error("Failed to move point: %s", e)
+            self._notify_view_error(f"Failed to move point: {e!s}, ({parse_error()})")
+            return False
+
+    def commit_point_move(self) -> None:
+        """Persist the result of a drag made up of transient moves.
+
+        The undo entry was already recorded by the drag's first, non-transient
+        move, so this only has to write the points out and mark the project
+        dirty.
+        """
+        self._save_points()
+        self.project_manager.mark_modified()
+
+    def find_point_near(
+        self, source: str, x: float, y: float, radius: float
+    ) -> int | None:
+        """Index of the control point nearest ``(x, y)``, if one is close enough.
+
+        Hit testing lives here rather than in the view so it works in the same
+        displayed coordinates that clicks arrive in, including the destination
+        rescaling that ``match_resolutions`` applies.
+
+        Returns
+        -------
+        int | None
+            The nearest point within ``radius``, or None if there is none.
+        """
+        src_points, dst_points = self.get_points()
+        points = src_points if source == "source" else dst_points
+
+        if points is None or len(points) == 0:
+            return None
+
+        points = np.asarray(points, dtype=float)
+        if source == "destination" and self.match_resolutions:
+            src_res, dst_res = self.get_resolutions()
+            points = points * (dst_res / src_res)
+
+        distances = np.hypot(points[:, 0] - x, points[:, 1] - y)
+        nearest = int(np.argmin(distances))
+        if distances[nearest] > radius:
+            return None
+        return nearest
+
+    def can_undo(self) -> bool:
+        """True if there is a point change to undo."""
+        return self.point_manager.can_undo()
+
+    def can_redo(self) -> bool:
+        """True if there is an undone point change to reapply."""
+        return self.point_manager.can_redo()
+
+    def check_points(self, transform_type: Any = None) -> list[validation.Issue]:
+        """Report anything that will make transform estimation fail or disappoint.
+
+        Called before estimating so the view can warn while the points are
+        still on screen and easy to fix.
+        """
+        src_points, dst_points = self.get_points()
+
+        # Coverage is the only check that needs a shape; the rest still run
+        # without one.
+        image_shape = self._source_shape()
+
+        return validation.check_control_points(
+            src_points,
+            dst_points,
+            transform_type=transform_type or TransformType.TPS,
+            image_shape=image_shape,
+        )
+
+    def _source_shape(self) -> tuple[int, ...] | None:
+        """Shape of the current source slice, or None if unavailable."""
+        if self.source_image is None:
+            return None
+        try:
+            return self.source_image.get_slice(
+                self.current_source_mode, self.current_slice
+            ).shape
+        except (KeyError, IndexError):
+            logger.debug("Could not determine the source image shape")
+            return None
+
+    def assess_transform(
+        self, transform_type: Any = None, include_leave_one_out: bool = True
+    ) -> metrics.TransformQuality | None:
+        """Fit a transform and report how good it looks.
+
+        Returns
+        -------
+        TransformQuality | None
+            None when there are no usable points, or the fit fails. The
+            failure is reported to the view, as with any other estimation.
+        """
+        try:
+            src_points, dst_points = self.get_points()
+            if src_points.size == 0 or src_points.shape != dst_points.shape:
+                return None
+
+            if self.match_resolutions:
+                src_res, dst_res = self.get_resolutions()
+                dst_points = dst_points * (dst_res / src_res)
+
+            image_shape = self._source_shape()
+            output_shape = image_shape[:2] if image_shape else None
+
+            tform = self.transform_manager.estimate_transform(
+                src_points,
+                dst_points,
+                transform_type or TransformType.TPS,
+                output_shape,
+                self.regularization,
+            )
+
+            return metrics.assess(
+                tform,
+                src_points,
+                dst_points,
+                image_shape=image_shape,
+                include_leave_one_out=include_leave_one_out,
+            )
+
+        except Exception as e:
+            logger.error("Failed to assess the transform: %s", e)
+            self._notify_view_error(
+                f"Failed to assess the transform: {e!s}, ({parse_error()})"
+            )
+            return None
+
+    def live_residuals(self) -> np.ndarray | None:
+        """Per-point leave-one-out residuals, cheap enough to run on every edit.
+
+        Uses the closed form in :func:`tpsreg.tps.loocv_residuals` rather than
+        the explicit refitting in :mod:`tpsreg.metrics`. That is what makes
+        this affordable while clicking: a single solve rather than one per
+        point, measured at 0.2 ms for 25 control points, 1.5 ms for 100 and
+        16 ms for 400, against 15 ms / 62 ms / 2.5 s for the refitting version.
+
+        Returns
+        -------
+        np.ndarray | None
+            ``(K,)`` residuals in pixels, or None when there is nothing to
+            report -- too few points, mismatched counts, or a degenerate
+            configuration. None means "no answer", which the view shows as no
+            numbers rather than as zeros.
+        """
+        try:
+            src_points, dst_points = self.get_points()
+            # Below the threshold the numbers are not just noisy, they are
+            # misleading: with five points every residual comes out huge.
+            # Showing nothing is more honest than showing that.
+            if (
+                src_points.size == 0
+                or src_points.shape != dst_points.shape
+                or len(src_points) < metrics.MIN_POINTS_FOR_RESIDUALS
+            ):
+                return None
+
+            if self.match_resolutions:
+                src_res, dst_res = self.get_resolutions()
+                dst_points = dst_points * (dst_res / src_res)
+
+            strength = self.regularization
+            if isinstance(strength, str):
+                # "auto" resolves per fit; for a live readout the unsmoothed
+                # residual is the honest one, and it is what the points
+                # themselves are being judged on.
+                strength = 0.0
+
+            residuals = loocv_residuals(src_points, dst_points, strength)
+            if not np.all(np.isfinite(residuals)):
+                return None
+            return residuals
+
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            # Degenerate points while the user is still placing them is
+            # normal, not an error worth a dialog.
+            logger.debug("Live residuals unavailable: %s", exc)
+            return None
+
+    def set_regularization(self, value: float | str) -> None:
+        """Set the smoothing strength used when estimating.
+
+        Parameters
+        ----------
+        value:
+            0 to interpolate the control points exactly, a positive number to
+            smooth by that much, or "auto" to let cross-validation decide.
+
+        Raises
+        ------
+        ValueError
+            If the value is neither a non-negative number nor "auto".
+        """
+        if isinstance(value, str):
+            if value.lower() != "auto":
+                raise ValueError(
+                    f'Unknown regularization: {value!r}. Expected a number or "auto".'
+                )
+            self.regularization = "auto"
+        else:
+            strength = float(value)
+            if strength < 0:
+                raise ValueError(
+                    f"Regularization must not be negative; got {strength}."
+                )
+            self.regularization = strength
+
+        logger.info("Regularization set to %s", self.regularization)
+
     def clear_points(self, slice_only: bool = True) -> None:
         """Clear control points."""
         try:
@@ -791,7 +1087,11 @@ class ApplicationPresenter:
 
                 # Estimate transform
                 tform = self.transform_manager.estimate_transform(
-                    src_points, dst_points, transform_type, output_shape
+                    src_points,
+                    dst_points,
+                    transform_type,
+                    output_shape,
+                    self.regularization,
                 )
 
             # Apply transform
@@ -859,6 +1159,7 @@ class ApplicationPresenter:
                     transform_type,
                     output_shape,
                     n_slices=src_stack.shape[0],
+                    regularization=self.regularization,
                 )
 
             # Apply transformation
@@ -1041,7 +1342,11 @@ class ApplicationPresenter:
 
             # Estimate transform
             tform = self.transform_manager.estimate_transform(
-                src_points, dst_points, transform_type, output_shape=output_shape
+                src_points,
+                dst_points,
+                transform_type,
+                output_shape=output_shape,
+                regularization=self.regularization,
             )
 
             # Export
