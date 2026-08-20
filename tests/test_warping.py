@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from skimage import transform as tf
 
 from tpsreg.tps import ThinPlateSplineTransform
 from tpsreg.warping import (
@@ -14,6 +15,7 @@ from tpsreg.warping import (
     _warp_tiled,
     get_transform,
     get_transform_params,
+    homography_matrix,
     set_transform_params,
     transform_coords,
     transform_image,
@@ -278,6 +280,184 @@ class TestTiledWarping:
         shifted = _ShiftedTransform(transform, 40, 25)
         local = np.array([[3.0, 4.0]])
         np.testing.assert_allclose(shifted(local), transform(np.array([[43.0, 29.0]])))
+
+
+class TestMatrixFastPath:
+    """Transforms that are really a matrix should be handed over as one.
+
+    skimage then warps in Cython, computing source coordinates as it goes
+    rather than through a Python call per tile. Measured at 8192x8192 this was
+    101 s against 3.8 s, so the thing worth guarding is that the shortcut
+    produces the same picture and is only taken when it is valid.
+    """
+
+    @pytest.fixture
+    def image(self, rng):
+        return (rng.random((120, 150)) * 255).astype(np.uint8)
+
+    @pytest.mark.parametrize(
+        "tform",
+        [
+            tf.EuclideanTransform(rotation=0.05, translation=(3.0, -2.0)),
+            tf.SimilarityTransform(scale=1.1, translation=(4.0, 1.0)),
+            tf.AffineTransform(scale=(1.05, 0.95), shear=0.02),
+            tf.ProjectiveTransform(
+                matrix=np.array([[1.01, 0.02, 3.0], [0.0, 0.99, -2.0], [0.0, 0.0, 1.0]])
+            ),
+        ],
+    )
+    def test_it_is_recognised(self, tform):
+        matrix = homography_matrix(tform)
+        assert matrix is not None
+        np.testing.assert_allclose(matrix, tform.params)
+
+    def test_a_bare_matrix_is_recognised(self):
+        matrix = np.eye(3)
+        np.testing.assert_array_equal(homography_matrix(matrix), matrix)
+
+    def test_a_spline_is_not(self, grid_points):
+        """The important negative: a spline must never be taken for a matrix."""
+        tform = ThinPlateSplineTransform()
+        tform.estimate(grid_points + 1.0, grid_points, (64, 64))
+        assert homography_matrix(tform) is None
+
+    def test_something_unrelated_is_not(self):
+        assert homography_matrix(object()) is None
+        assert homography_matrix(np.zeros((2, 2))) is None
+
+    @pytest.mark.parametrize("order", [1, 3])
+    def test_it_matches_skimage(self, image, order):
+        """The contract: warping through a transform equals skimage's answer."""
+        tform = tf.EuclideanTransform(rotation=0.05, translation=(3.0, -2.0))
+
+        np.testing.assert_array_equal(
+            warp(image, tform, (120, 150), order=order),
+            tf.warp(
+                image,
+                tform,
+                output_shape=(120, 150),
+                mode="constant",
+                cval=0,
+                order=order,
+            ),
+        )
+
+    def test_bilinear_agrees_with_the_general_path(self, image):
+        """At order 1 the shortcut is the same arithmetic, so it must agree.
+
+        Not asserted at order 3: skimage's Cython path interpolates with a
+        cubic convolution while its scipy path uses a prefiltered B-spline, and
+        the two genuinely differ by ~0.1 of a normalised level. That is
+        skimage's inconsistency, not ours -- see the size test below.
+        """
+
+        class Opaque:
+            """Hides the matrix, forcing the general path."""
+
+            def __init__(self, tform):
+                self._tform = tform
+
+            def __call__(self, coords):
+                return self._tform(coords)
+
+        tform = tf.EuclideanTransform(rotation=0.05, translation=(3.0, -2.0))
+
+        np.testing.assert_allclose(
+            warp(image, tform, (120, 150), order=1),
+            warp(image, Opaque(tform), (120, 150), order=1),
+            atol=1e-12,
+        )
+
+    @pytest.mark.parametrize("order", [1, 3])
+    def test_the_image_size_does_not_change_the_interpolation(
+        self, image, order, monkeypatch
+    ):
+        """A matrix transform must warp the same way at every output size.
+
+        It used not to. Outputs under the tiling threshold went to skimage
+        whole, which takes its Cython path for a matrix; larger ones were tiled
+        through a callable, which does not. At order 3 those two disagree, so
+        the same transform on the same data gave different pixels either side
+        of 4 Mpx. Handing the matrix over directly is what removes that.
+        """
+        tform = tf.EuclideanTransform(rotation=0.05, translation=(3.0, -2.0))
+        small = warp(image, tform, (120, 150), order=order)
+
+        monkeypatch.setattr("tpsreg.warping.TILING_THRESHOLD", 0)
+        as_if_huge = warp(image, tform, (120, 150), order=order)
+
+        np.testing.assert_array_equal(small, as_if_huge)
+
+    def test_order_zero_still_works(self, image):
+        """Order 0 has no Cython path, so it must fall through, not break."""
+        tform = tf.EuclideanTransform(translation=(4.0, -3.0))
+        result = warp(image, tform, (120, 150), order=0)
+
+        assert result.dtype == image.dtype
+        np.testing.assert_array_equal(
+            result,
+            tf.warp(
+                image,
+                tform,
+                output_shape=(120, 150),
+                mode="constant",
+                cval=0,
+                order=0,
+            ),
+        )
+
+
+class TestClipping:
+    """Clipping is hoisted out of the tile loop, so it must still happen.
+
+    skimage clips every warp call to the input's range, and its clip scans the
+    whole input image -- per tile that is a full pass over the source for every
+    tile. Doing it once is worth 15x at 8192x8192, but only if the result is
+    unchanged, which is what these check.
+    """
+
+    @pytest.fixture
+    def transform(self, rng):
+        dst = rng.uniform(10, 110, size=(8, 2))
+        tform = ThinPlateSplineTransform()
+        tform.estimate(dst + rng.normal(0, 4, size=(8, 2)), dst, (120, 150))
+        return tform
+
+    def test_cubic_overshoot_is_clipped_away(self, transform, rng):
+        """Order 3 rings past the input range at any sharp edge.
+
+        Without clipping a bright edge comes back brighter than anything that
+        was ever in the image, which is exactly what the clip exists to stop.
+        """
+        image = np.zeros((120, 150))
+        image[40:80, 50:100] = 1.0
+
+        tiled = _warp_tiled(image, transform, (120, 150), order=3, cval=0, tile=32)
+
+        assert tiled.max() <= image.max() + 1e-12
+        assert tiled.min() >= image.min() - 1e-12
+
+    def test_a_cval_outside_the_input_range_survives(self, transform):
+        """skimage widens the range rather than clipping the fill value away.
+
+        With a fill above everything in the image, a plain clip would drag the
+        background down to the image maximum and lose the distinction between
+        "outside" and "bright".
+        """
+        image = np.full((120, 150), 0.5)
+
+        tiled = _warp_tiled(image, transform, (200, 200), order=1, cval=9.0, tile=32)
+        reference = tf.warp(
+            image,
+            transform,
+            output_shape=(200, 200),
+            mode="constant",
+            cval=9.0,
+            order=1,
+        )
+
+        np.testing.assert_array_equal(tiled, reference)
+        assert tiled.max() == pytest.approx(9.0)
 
 
 class TestTileSizing:
