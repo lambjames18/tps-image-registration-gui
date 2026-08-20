@@ -1010,7 +1010,9 @@ class ApplicationPresenter:
 
         return src_img, dst_img
 
-    def get_current_image_stacks(self, normalize=True) -> tuple[np.ndarray, np.ndarray] | None:
+    def get_current_image_stacks(
+        self, normalize=True
+    ) -> tuple[np.ndarray, np.ndarray] | None:
         """Get current image stacks for 3D processing."""
         # Get the current source image stack
         if not self.source_image:
@@ -1195,6 +1197,43 @@ class ApplicationPresenter:
                 f"Failed to apply 3D transform: {e!s}, ({parse_error()})"
             )
             return None
+
+    #: Formats that can always be written, whatever was loaded. They carry
+    #: pixels and nothing else, so there is no source file to be faithful to.
+    ALWAYS_EXPORTABLE = (DataFormat.IMAGE, DataFormat.RAW_IMAGE)
+
+    #: Formats that can only be written back out when the source was read from
+    #: one. Both reuse structure from the original file -- the ``.ang`` header,
+    #: the DREAM.3D container layout -- which there is no way to invent from an
+    #: ordinary image.
+    ROUND_TRIP_ONLY = (DataFormat.ANG, DataFormat.DREAM3D)
+
+    def available_export_formats(self) -> list[DataFormat]:
+        """Formats this project can actually be exported as.
+
+        Offering a format that cannot be written and failing afterwards is
+        worse than not offering it: by then the user has picked a crop mode,
+        chosen a filename, and waited. `export_data` still refuses these
+        cases, but nobody should reach that check through the interface.
+
+        ``.ang`` and DREAM.3D are gated on the *source* rather than on either
+        image, because the export warps source data onto the source grid and
+        reuses that file's header. A destination in one of those formats does
+        not make the export possible.
+
+        ``.h5`` is never offered; reading it works, writing it is not
+        implemented.
+        """
+        formats = list(self.ALWAYS_EXPORTABLE)
+
+        loaded = (
+            self.source_image.metadata.get("dataformat")
+            if self.source_image is not None
+            else None
+        )
+        formats.extend(fmt for fmt in self.ROUND_TRIP_ONLY if loaded == fmt.value)
+
+        return formats
 
     def export_data(
         self,
