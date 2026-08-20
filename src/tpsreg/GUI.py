@@ -26,6 +26,33 @@ from tpsreg.theme import apply_to_window, get_palette, palette_of
 
 logger = logging.getLogger(__name__)
 
+#: Shown in the Help menu and the About box.
+APP_NAME = "tpsreg"
+
+#: Where Help sends people. Pinned to `main` rather than a tag: a user running
+#: an older build is better served by current documentation than by a link to
+#: a tag that may not exist.
+REPOSITORY_URL = "https://github.com/lambjames18/tps-image-registration-gui"
+USER_GUIDE_URL = f"{REPOSITORY_URL}/blob/main/docs/user-guide.md"
+ISSUES_URL = f"{REPOSITORY_URL}/issues"
+
+#: Keyboard shortcuts, as ``(keys, what it does)``. Kept beside the bindings
+#: in `_bind_events`; a shortcut added there belongs here as well, or the Help
+#: menu quietly starts lying.
+SHORTCUTS: tuple[tuple[str, str], ...] = (
+    ("Ctrl+N", "New project"),
+    ("Ctrl+O", "Open project"),
+    ("Ctrl+S", "Save project"),
+    ("Ctrl+Z", "Undo"),
+    ("Ctrl+Y", "Redo"),
+    ("Ctrl++", "Zoom in"),
+    ("Ctrl+-", "Zoom out"),
+    ("Ctrl+0", "Zoom to 100%"),
+    ("Left-click", "Place a control point"),
+    ("Right-click", "Remove the point pair nearest the cursor"),
+    ("Drag a point", "Move it; the whole drag is one undo step"),
+)
+
 #: Labels for the smoothing selector. Plain words rather than "regularization"
 #: because the control has to mean something at a glance.
 SMOOTHING_OFF = "Off"
@@ -294,43 +321,52 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
         self.progress_bar.pack(side="right", padx=5)
 
     def _create_menu(self):
-        """Create application menu."""
+        """Create application menu.
+
+        Organised around the nouns the application works on. Control points
+        used to be spread across four menus -- loaded and saved from File,
+        cleared from Edit, hidden and inspected from View, detected from a
+        top-level "Auto point detection" -- so doing anything with them meant
+        knowing which menu it had ended up in. They are all under Points now,
+        and File is left holding files.
+        """
         self.menubar = tk.Menu(self)
         self.config(menu=self.menubar)
 
-        # File menu
+        # File: projects, images, exports. Things with a path on disk.
         file_menu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="File", menu=file_menu)
-        file_menu.add_command(label="New project", command=self._on_new_project)
-        file_menu.add_command(label="Open project", command=self._on_open_project)
+        file_menu.add_command(
+            label="New project", command=self._on_new_project, accelerator="Ctrl+N"
+        )
+        file_menu.add_command(
+            label="Open project...", command=self._on_open_project, accelerator="Ctrl+O"
+        )
         file_menu.add_command(
             label="Save project", command=self._on_save_project, accelerator="Ctrl+S"
         )
-        file_menu.add_command(label="Save project as", command=self._on_save_project_as)
-        file_menu.add_separator()
-        file_menu.add_command(label="Open source image", command=self._on_open_source)
         file_menu.add_command(
-            label="Open destination image", command=self._on_open_destination
+            label="Save project as...", command=self._on_save_project_as
         )
         file_menu.add_separator()
         file_menu.add_command(
-            label="Load source points", command=self._on_load_source_points
+            label="Open source image...", command=self._on_open_source
         )
         file_menu.add_command(
-            label="Load destination points", command=self._on_load_destination_points
+            label="Open destination image...", command=self._on_open_destination
         )
-        file_menu.add_command(label="Save points", command=self._on_save_points)
         file_menu.add_separator()
         file_menu.add_command(
-            label="Export transform", command=self._on_export_transform
+            label="Export transform...", command=self._on_export_transform
         )
         file_menu.add_command(
-            label="Export corrected data", command=self._on_export_corrected
+            label="Export corrected data...", command=self._on_export_corrected
         )
         file_menu.add_separator()
         file_menu.add_command(label="Exit", command=self.quit)
 
-        # Edit menu
+        # Edit: the history, and the one setting that is neither a file nor a
+        # point.
         self.edit_menu = tk.Menu(self.menubar, tearoff=0)
         self.menubar.add_cascade(label="Edit", menu=self.edit_menu)
         self.edit_menu.add_command(
@@ -340,33 +376,63 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             label="Redo", command=self._on_redo, accelerator="Ctrl+Y"
         )
         self.edit_menu.add_separator()
-        self.edit_menu.add_command(label="Clear points", command=self._on_clear_points)
-        self.edit_menu.add_separator()
         self.edit_menu.add_command(
-            label="Set resolution", command=self._on_set_resolution
+            label="Set resolution...", command=self._on_set_resolution
         )
         self._refresh_edit_menu()
 
-        # View menu
-        view_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="View", menu=view_menu)
-        view_menu.add_checkbutton(
+        # Points: everything that acts on control points, which is most of
+        # what anyone does here.
+        points_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Points", menu=points_menu)
+        points_menu.add_command(
+            label="Detect with MatchAnything...",
+            command=lambda: self._on_auto_detect_points("matchanything"),
+        )
+        points_menu.add_command(
+            label="Detect with SIFT...",
+            command=lambda: self._on_auto_detect_points("sift"),
+        )
+        points_menu.add_separator()
+        points_menu.add_command(
+            label="Load source points...", command=self._on_load_source_points
+        )
+        points_menu.add_command(
+            label="Load destination points...",
+            command=self._on_load_destination_points,
+        )
+        points_menu.add_command(label="Save points...", command=self._on_save_points)
+        points_menu.add_separator()
+        points_menu.add_command(
+            label="Check registration quality", command=self._on_check_quality
+        )
+        points_menu.add_separator()
+        # Held on the instance: a BooleanVar built inline is only referenced
+        # by the menu entry, and Tk keeps no Python reference, so it can be
+        # collected and take the checkbutton's state with it.
+        self.hide_points_var = tk.BooleanVar(value=False)
+        points_menu.add_checkbutton(
             label="Hide points",
-            variable=tk.BooleanVar(value=False),
+            variable=self.hide_points_var,
             command=self._on_toggle_points,
         )
-        view_menu.add_separator()
-        view_menu.add_command(label="View corrected image", command=self._on_apply)
+        points_menu.add_command(label="Clear points...", command=self._on_clear_points)
+        points_menu.add_separator()
+        points_menu.add_command(
+            label="Set MatchAnything checkpoint...",
+            command=self._on_set_checkpoint_path,
+        )
+
+        # View: what is on screen.
+        view_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="View", menu=view_menu)
+        view_menu.add_command(label="Corrected image", command=self._on_apply)
         view_menu.add_command(
-            label="View corrected image stack",
+            label="Corrected image stack",
             command=lambda: self._on_apply(True),
         )
-        view_menu.add_separator()
         view_menu.add_command(
-            label="View matched points", command=self._on_view_matched_points
-        )
-        view_menu.add_command(
-            label="Check registration quality", command=self._on_check_quality
+            label="Matched points", command=self._on_view_matched_points
         )
         view_menu.add_separator()
         view_menu.add_command(
@@ -379,22 +445,16 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             label="Zoom 100%", command=self._on_zoom_reset, accelerator="Ctrl+0"
         )
 
-        # Tools menu
-        tools_menu = tk.Menu(self.menubar, tearoff=0)
-        self.menubar.add_cascade(label="Auto point detection", menu=tools_menu)
-        tools_menu.add_command(
-            label="MatchAnything",
-            command=lambda: self._on_auto_detect_points("matchanything"),
+        # Help: where to go when the interface does not explain itself.
+        help_menu = tk.Menu(self.menubar, tearoff=0)
+        self.menubar.add_cascade(label="Help", menu=help_menu)
+        help_menu.add_command(label="User guide", command=self._on_open_user_guide)
+        help_menu.add_command(
+            label="Keyboard shortcuts", command=self._on_show_shortcuts
         )
-        tools_menu.add_command(
-            label="SIFT",
-            command=lambda: self._on_auto_detect_points("sift"),
-        )
-        tools_menu.add_separator()
-        tools_menu.add_command(
-            label="Set MatchAnything checkpoint...",
-            command=self._on_set_checkpoint_path,
-        )
+        help_menu.add_separator()
+        help_menu.add_command(label="Report an issue", command=self._on_open_issues)
+        help_menu.add_command(label=f"About {APP_NAME}", command=self._on_about)
 
     def _create_main_layout(self):
         """Create main layout with image viewers."""
@@ -654,7 +714,10 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
 
     def _bind_events(self):
         """Bind keyboard and mouse events."""
-        # Keyboard shortcuts
+        # Keyboard shortcuts. Anything added here belongs in SHORTCUTS too,
+        # which is what the Help menu shows.
+        self.bind("<Control-n>", lambda e: self._on_new_project())
+        self.bind("<Control-o>", lambda e: self._on_open_project())
         self.bind("<Control-s>", lambda e: self._on_save_project())
         self.bind("<Control-z>", lambda e: self._on_undo())
         self.bind("<Control-y>", lambda e: self._on_redo())
@@ -1553,6 +1616,76 @@ class ModernDistortionCorrectionView(tk.Tk, ViewInterface):
             self.presenter.set_checkpoint_path(Path(file_path))
             self.set_status(f"Checkpoint path set to: {Path(file_path).name}")
         self.show_progress(False)
+
+    def _open_url(self, url: str, what: str) -> None:
+        """Open a URL in the user's browser.
+
+        Failing to launch a browser is not worth an error dialog on its own,
+        but leaving the user with nothing at all is: the address is put in the
+        status bar so it can still be typed or copied.
+        """
+        import webbrowser
+
+        try:
+            opened = webbrowser.open(url)
+        except Exception:  # pragma: no cover - depends on the desktop session
+            logger.debug("Could not open %s", url, exc_info=True)
+            opened = False
+
+        self.set_status(f"Opened {what}" if opened else f"{what.capitalize()}: {url}")
+
+    def _on_open_user_guide(self):
+        self._open_url(USER_GUIDE_URL, "the user guide")
+
+    def _on_open_issues(self):
+        self._open_url(ISSUES_URL, "the issue tracker")
+
+    def _on_show_shortcuts(self):
+        """List the keyboard and mouse shortcuts."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Keyboard shortcuts")
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        apply_to_window(dialog, self.palette)
+
+        frame = ttk.Frame(dialog, padding=16)
+        frame.pack(fill="both", expand=True)
+
+        for row, (keys, description) in enumerate(SHORTCUTS):
+            ttk.Label(
+                frame,
+                text=keys,
+                font=("TkFixedFont", 10),
+                foreground=self.palette.accent,
+            ).grid(row=row, column=0, sticky="w", padx=(0, 16), pady=2)
+            ttk.Label(frame, text=description).grid(
+                row=row, column=1, sticky="w", pady=2
+            )
+
+        close = ttk.Button(
+            frame, text="Close", command=dialog.destroy, style="Accent.TButton"
+        )
+        close.grid(row=len(SHORTCUTS), column=0, columnspan=2, sticky="e", pady=(16, 0))
+
+        dialog.bind("<Return>", lambda _e: dialog.destroy())
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+        dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+
+        self._centre_on_self(dialog)
+        dialog.grab_set()
+        close.focus_set()
+        dialog.wait_window()
+
+    def _on_about(self):
+        """Show the version and where to find everything else."""
+        messagebox.showinfo(
+            f"About {APP_NAME}",
+            f"{APP_NAME} {__version__}\n\n"
+            "Multimodal image registration by thin-plate spline.\n\n"
+            f"{REPOSITORY_URL}\n\n"
+            "MIT licensed.",
+            parent=self,
+        )
 
     def _on_view_matched_points(self):
         """Handle viewing matched points visualization."""

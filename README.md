@@ -94,7 +94,7 @@ placing control points, CLAHE, previewing, and every export path.
 
 To use MatchAnything you also need the model weights, which are
 [downloaded separately](https://drive.google.com/file/d/12L3g9-w8rR9K2L4rYaGaDJ7NqX1D713d/view)
-and pointed at from **Auto → Set MatchAnything checkpoint...**. The model runs on
+and pointed at from **Points → Set MatchAnything checkpoint...**. The model runs on
 CUDA, Apple Silicon (MPS) or CPU, selected automatically. The first run downloads
 additional internal weights.
 
@@ -143,7 +143,7 @@ example — the fastest way to see a working result. See
 4. **Place control points.** Left-click to add, right-click near a point to
    remove, and drag a point to adjust it. Click the source first, then its
    partner in the destination.
-5. **Preview.** View → *View corrected image*. Adjust points and repeat until
+5. **Preview.** View → *Corrected image*. Adjust points and repeat until
    satisfied.
 6. **Export.** File → *Export corrected data...*.
 
@@ -167,9 +167,9 @@ run it as `python -m tpsreg`.
 package on Linux; see [Tk](#tk) above. On macOS it is missing from some
 Homebrew Python builds, which `brew install python-tk` fixes.
 
-**The Auto menu's MatchAnything option does nothing, or reports a missing
+**The Points menu's MatchAnything option does nothing, or reports a missing
 checkpoint** — the model weights are a separate download and have to be pointed
-at from **Auto → Set MatchAnything checkpoint...**; see
+at from **Points → Set MatchAnything checkpoint...**; see
 [optional extras](#optional-extras).
 
 **Automatic point detection is very slow** — on Apple Silicon and CPU the model
