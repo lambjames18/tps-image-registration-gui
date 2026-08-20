@@ -276,6 +276,89 @@ An `.ang` file can only be exported when the source data was loaded from one.
 
 ---
 
+## Registering a stack of images
+
+`scripts/register_stack.py` aligns a folder of images slice by slice using the
+MatchAnything model, without the GUI and without a display. It is meant for
+serial-section data — FIB/SEM slices, serial optical sections — where clicking
+points on every pair is not realistic.
+
+```bash
+python scripts/register_stack.py \
+    --input  path/to/slices \
+    --output path/to/results \
+    --transform rigid
+```
+
+Add `--dry-run` first on a large stack: it prints what would be processed, in
+the order it would be processed, and stops before loading the model. Filenames
+are sorted numerically, so `slice_10` lands after `slice_9` rather than after
+`slice_1`.
+
+**Transform** (`--transform`) is one of `translation`, `rigid`, `affine`, or
+`tps`. Prefer the most constrained model the physical situation allows: a
+constrained model needs fewer matches and cannot invent deformation that is not
+there. A thin-plate spline will happily absorb a handful of bad matches into a
+warp that looks plausible slice by slice and is wrong.
+
+**Reference** (`--reference`) decides what each slice is registered against,
+and the choice is a real trade-off:
+
+- `previous` (default) matches adjacent slices, which look alike, so matching
+  is easy. Each slice's transform is the composition of every one before it, so
+  small per-pair errors accumulate into drift along the stack.
+- `first` and `middle` register everything against one fixed slice. Nothing
+  accumulates, but the matcher is asked to relate slices that may be far apart
+  and no longer resemble each other.
+
+Sequential mode composes coordinate mappings rather than resampling once per
+link, so a slice at the end of the stack is interpolated exactly once no matter
+how long the chain is. For `translation`, `rigid` and `affine` the composition
+is a matrix product, so warping slice 300 costs the same as slice 1.
+
+A spline chain cannot reduce that way — warping slice N evaluates N splines —
+so `--transform tps --reference previous` gets slower the further into the
+stack it goes, and on a long stack of large images it is impractical. Use
+`--reference first` or `--reference middle` with `tps`, where each slice has
+exactly one spline and nothing accumulates. The script warns when a run asks
+for the expensive combination.
+
+The output folder holds the aligned images plus the debugging trail:
+
+```
+registered/     the aligned images
+matches/        each pair's matches, drawn as lines between the two images
+overlays/       each registered slice checkerboarded against its reference
+transforms/     the fitted transform per slice, as .npy
+report.json     every number the run produced
+summary.csv     one row per slice, for scanning or plotting
+register.log    the full log
+```
+
+Per pair the report records the match count, the median and maximum residual,
+how far the slice moved, and any warnings — too few matches for the chosen
+model, degenerate point geometry, a residual out of line with the rest.
+Residuals are ordinary for the constrained models and leave-one-out for `tps`,
+since a spline interpolates and its ordinary residuals are always near zero.
+Slices whose displacement is unlike their neighbours' are flagged by a
+median/MAD z-score. A pair that fails to match or fit gets the identity
+transform and is recorded as failed rather than aborting the run, so one bad
+slice does not cost you the whole stack.
+
+The registration logic is in `tpsreg.stack_registration` and takes the matcher
+as an argument, so it can be used with a different matcher — or tested without
+one:
+
+```python
+from tpsreg.stack_registration import register_stack, apply_transforms
+
+transforms, result = register_stack(images, match_fn, transform_type="rigid")
+registered = apply_transforms(images, transforms)
+print(result.summary())
+```
+
+---
+
 ## Using tpsreg as a library
 
 The registration core is importable and does not require a display:
@@ -309,6 +392,12 @@ of the image. Warping is done a tile at a time once the output is large
 enough that one coordinate array for the whole thing would be the limiting
 factor, so a stitched optical mosaic is bounded by the tile rather than by
 the image.
+
+A transform that is really a matrix — translation, rigid, affine, projective —
+skips tiling entirely and is handed to skimage as a matrix, which lets it
+compute source coordinates in Cython without building a coordinate array at
+all. At 8192×8192 that is 4 s rather than 101 s. Splines take the tiled path,
+where the cost is dominated by evaluating the kernel.
 
 If you are going to query most of a grid repeatedly, a dense displacement
 field can be cached, at whatever resolution is worth the memory:
