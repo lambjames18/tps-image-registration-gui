@@ -1,27 +1,26 @@
-cff-version: 1.2.0
-title: >-
-  tpsreg: a GUI for multimodal microscopy image registration using thin-plate
-  splines
-message: If you use this software in published work, please cite it.
-type: software
+abstract: A desktop application for aligning multimodal microscopy data using a thin-plate
+  spline transformation fitted to matched control points. Supports 2D images and 3D
+  serial-sectioning stacks, EBSD formats (.ang, .h5, .dream3d) alongside standard
+  image formats, and optional automatic control point detection with a pretrained
+  deep-learning matcher.
 authors:
-  - given-names: James
-    family-names: Lamb
-    email: lambjames18@gmail.com
-repository-code: https://github.com/lambjames18/tps-image-registration-gui
-abstract: >-
-  A desktop application for aligning multimodal microscopy data using a
-  thin-plate spline transformation fitted to matched control points. Supports
-  2D images and 3D serial-sectioning stacks, EBSD formats (.ang, .h5,
-  .dream3d) alongside standard image formats, and optional automatic control
-  point detection with a pretrained deep-learning matcher.
+- family-names: Lamb
+  given-names: James
+cff-version: 1.2.0
+date-released: '2026-09-04'
+doi: 10.5281/zenodo.22288731
 keywords:
-  - image registration
-  - thin-plate spline
-  - electron microscopy
-  - EBSD
-  - multimodal imaging
-  - serial sectioning
-license: MIT
-version: 0.2.0
-date-released: "2026-08-03"
+- image registration
+- thin-plate spline
+- electron microscopy
+- EBSD
+- multimodal imaging
+- serial sectioning
+license:
+- mit
+message: If you use this software, please cite it using the metadata from this file.
+repository-code: https://github.com/lambjames18/tps-image-registration-gui/tree/v1.0.0
+title: 'tpsreg: a GUI for multimodal microscopy image registration using thin-plate
+  splines'
+type: software
+version: v1.0.0
