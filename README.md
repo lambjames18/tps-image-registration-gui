@@ -5,6 +5,7 @@
 [![Tests](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Flambjames18%2Ftps-image-registration-gui%2Fbadges%2Ftests.json)](https://github.com/lambjames18/tps-image-registration-gui/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22288731.svg)](https://doi.org/10.5281/zenodo.22288731)
 
 A desktop application for aligning multimodal microscopy data using a thin-plate
 spline transformation fitted to matched control points. Built for correlating
@@ -249,6 +250,24 @@ warped = transform_image(image, src, dst, output_shape=(100, 100), order=1)
 correspondences.
 
 ---
+
+## Citation
+
+If you use this code in your work, please consider citing this repository:
+
+```bibtex
+@software{tpsreg,
+  author       = {Lamb, James},
+  title        = {tpsreg: a GUI for multimodal microscopy image
+                          registration using thin-plate splines},
+  month        = sep,
+  year         = 2026,
+  publisher    = {Zenodo},
+  version      = {v1.0.0},
+  doi          = {10.5281/zenodo.22288731},
+  url          = {https://doi.org/10.5281/zenodo.22288731},
+}
+```
 
 ## Contributing
 
